@@ -25,6 +25,7 @@ use crate::deriv::*;
 use crate::dfa::DFA;
 use crate::parser::regex_parser;
 use crate::r1cs::*;
+use crate::config::*;
 
 #[cfg(feature="plot")]
 pub mod plot;
@@ -32,15 +33,15 @@ pub mod plot;
 #[derive(Debug, StructOpt)]
 #[structopt(name = "rezk", about = "Rezk: The regex to circuit compiler")]
 struct Options {
-    #[structopt(short = "ab", long = "alphabet", parse(from_str))]
+    #[structopt(short = "c", long = "config", parse(from_str))]
     alphabet: String,
 
     /// regular expression
     #[structopt(short = "r", long = "regex", parse(from_str))]
     regex: String,
 
-    #[structopt(short = "i", long = "input", parse(from_str))]
-    input: String,
+    #[structopt(short = "i", long = "input", parse(from_os_str))]
+    input: PathBuf,
 }
 
 fn main() {
