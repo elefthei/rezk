@@ -64,18 +64,18 @@ fn main() {
 
     // Convert the Regex to a DFA
     let dfa = DFA::new(&ab[..], r);
-    println!("dfa: {:#?}", dfa);
+//    println!("dfa: {:#?}", dfa);
 
     #[cfg(feature = "plot")]
     plot::plot_dfa(&dfa).expect("Failed to plot DFA to a pdf file");
 
     let num_steps = doc.chars().count(); // len of document
-    println!("Doc len is {}", num_steps);
+    println!("[COMPILER] Doc len is {}", num_steps);
 
     let sc = Sponge::<<G1 as Group>::Scalar, typenum::U2>::api_constants(Strength::Standard);
 
     let mut r1cs_converter = R1CS::new(&dfa, doc.clone(), 1, sc.clone());
-    println!("generate commitment");
+    println!("[COMMITTER] Generated commitment");
     r1cs_converter.gen_commitment();
     let (prover_data, _verifier_data) = r1cs_converter.to_r1cs();
 
@@ -97,7 +97,7 @@ fn main() {
     let circuit_secondary = TrivialTestCircuit::new(StepCounterType::External);
 
     // produce public parameters
-    println!("Producing public parameters...");
+    println!("[COMPILER] Producing public parameters...");
     let pp = PublicParams::<
         G1,
         G2,
@@ -157,7 +157,7 @@ fn main() {
     //sponge.start(parameter, None, acc);
 
     for i in 0..num_steps {
-        println!("STEP {}", i);
+        println!("[PROVER] STEP {}", i);
 
         // allocate real witnesses for round i
         let (wits, next_state) = r1cs_converter.gen_wit_i(i, current_state);
@@ -191,7 +191,7 @@ fn main() {
         );
         let expected_next_hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
 
-        println!("expected next hash in main {:#?}", expected_next_hash);
+//        println!("expected next hash in main {:#?}", expected_next_hash);
         sponge.finish(acc).unwrap(); // assert expected hash finished correctly
 
         let circuit_primary: DFAStepCircuit<<G1 as Group>::Scalar> = DFAStepCircuit::new(
@@ -220,7 +220,7 @@ fn main() {
         //println!("prove step {:#?}", result);
 
         assert!(result.is_ok());
-        println!("RecursiveSNARK::prove_step {}: {:?}", i, result.is_ok());
+        println!("[PROVER] RecursiveSNARK::prove_step {}: {:?}", i, result.is_ok());
         recursive_snark = Some(result.unwrap());
 
         // for next i+1 round
@@ -251,7 +251,11 @@ fn main() {
     assert!(res.is_ok());
     let compressed_snark = res.unwrap();
 
+    println!("[PROVER] CompressedSNARK prove OK");
+
     // verify compressed
     let res = compressed_snark.verify(&pp, FINAL_EXTERNAL_COUNTER, z0_primary, z0_secondary);
     assert!(res.is_ok());
+
+    println!("[VERIFIER] Final Compressed SNARK verification OK");
 }

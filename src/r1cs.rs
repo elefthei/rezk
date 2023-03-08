@@ -275,7 +275,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
                 acc,
             );
             hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
-            println!("intm hash out: {:#?}", hash);
+            //println!("intm hash out: {:#?}", hash);
             sponge.finish(acc).unwrap();
         }
         println!("commitment = {:#?}", hash.clone());
