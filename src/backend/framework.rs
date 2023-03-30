@@ -2,7 +2,7 @@ type G1 = pasta_curves::pallas::Point;
 type G2 = pasta_curves::vesta::Point;
 use crate::backend::costs::{JBatching, JCommit};
 use crate::backend::{nova::*, r1cs::*};
-use crate::dfa::DFA;
+use crate::dfa::NFA;
 use circ::cfg;
 use circ::cfg::CircOpt;
 use circ::target::r1cs::ProverData;
@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 
 // gen R1CS object, commitment, make step circuit for nova
 pub fn run_backend(
-    dfa: &DFA,
-    doc: &Vec<String>,
+    nfa: &NFA,
+    doc: &String,
     batching_type: Option<JBatching>,
     commit_type: Option<JCommit>,
     batch_size: usize,
@@ -29,7 +29,7 @@ pub fn run_backend(
     let sc = Sponge::<<G1 as Group>::Scalar, typenum::U2>::api_constants(Strength::Standard);
 
     let mut r1cs_converter =
-        R1CS::new(dfa, doc, batch_size, sc.clone(), batching_type, commit_type);
+        R1CS::new(nfa, doc, batch_size, sc.clone(), batching_type, commit_type);
     //let parse_ms = p_time.elapsed().as_millis();
 
     let c_time = Instant::now();
@@ -84,10 +84,11 @@ pub fn run_backend(
         pp.num_variables().1
     );
 
-    let mut current_state = dfa.get_init_state();
+    let strdoc = r1cs_converter.doc.clone();
+
     let z0_primary = vec![
-        <G1 as Group>::Scalar::from(current_state as u64),
-        <G1 as Group>::Scalar::from(dfa.ab_to_num(&doc[0]) as u64),
+        <G1 as Group>::Scalar::from(nfa.get_init_state() as u64),
+        <G1 as Group>::Scalar::from(nfa.ab_to_num(&strdoc[0]) as u64),
         <G1 as Group>::Scalar::from(0),
     ];
 
@@ -118,7 +119,7 @@ pub fn run_backend(
     let mut doc_running_q = None;
     let mut doc_running_v = None;
 
-    let mut current_state = 0; //dfa.get init state ??
+    let mut current_state = 0; //nfa.get init state ??
     for i in 0..num_steps {
         println!("STEP {}", i);
 
@@ -146,10 +147,10 @@ pub fn run_backend(
         //prover_data.check_all(&extended_wit);
         prover_data.check_all(&wits);
 
-        let current_char = doc[i * batch_size].clone();
+        let current_char = strdoc[i * batch_size].clone();
         let mut next_char: String = String::from("");
         if i + 1 < num_steps {
-            next_char = doc[(i + 1) * batch_size].clone();
+            next_char = strdoc[(i + 1) * batch_size].clone();
         };
         //println!("next char = {}", next_char);
 
@@ -168,7 +169,7 @@ pub fn run_backend(
                 &[
                     intm_hash,
                     <G1 as Group>::Scalar::from(
-                        dfa.ab_to_num(&doc[i * batch_size + b].clone()) as u64
+                        nfa.ab_to_num(&strdoc[i * batch_size + b]) as u64
                     ),
                 ],
                 acc,
@@ -192,8 +193,8 @@ pub fn run_backend(
                 <G1 as Group>::Scalar::from(next_state as u64),
             ],
             vec![
-                <G1 as Group>::Scalar::from(dfa.ab_to_num(&current_char) as u64),
-                <G1 as Group>::Scalar::from(dfa.ab_to_num(&next_char) as u64),
+                <G1 as Group>::Scalar::from(nfa.ab_to_num(&current_char) as u64),
+                <G1 as Group>::Scalar::from(nfa.ab_to_num(&next_char) as u64),
             ],
             vec![
                 <G1 as Group>::Scalar::from(prev_hash),
@@ -271,7 +272,7 @@ mod tests {
     use crate::backend::costs;
     use crate::backend::framework::*;
     use crate::backend::r1cs::*;
-    use crate::dfa::DFA;
+    use crate::dfa::NFA;
     use crate::regex::Regex;
     use circ::cfg;
     use circ::cfg::CircOpt;
@@ -287,13 +288,13 @@ mod tests {
         batch_sizes: Vec<usize>,
     ) {
         let r = Regex::new(&rstr);
-        let dfa = DFA::new(&ab[..], r);
+        let nfa = NFA::new(&ab[..], r);
         let chars: Vec<String> = doc.chars().map(|c| c.to_string()).collect();
 
         init();
         for b in batch_sizes {
             run_backend(
-                &dfa,
+                &nfa,
                 &doc.chars().map(|c| c.to_string()).collect(),
                 Some(batch_type.clone()),
                 Some(commit_type.clone()),

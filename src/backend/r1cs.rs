@@ -1,5 +1,5 @@
 use crate::backend::costs::{opt_cost_model_select, JBatching, JCommit};
-use crate::dfa::DFA;
+use crate::dfa::NFA;
 use circ::cfg;
 use circ::cfg::CircOpt;
 use circ::cfg::*;
@@ -315,7 +315,7 @@ fn poly_eval_circuit(points: Vec<Integer>, x_lookup: Term) -> Term {
 }
 
 pub struct R1CS<'a, F: PrimeField> {
-    dfa: &'a DFA,
+    nfa: &'a NFA,
     batching: JBatching,
     commit_type: JCommit,
     assertions: Vec<Term>,
@@ -325,7 +325,7 @@ pub struct R1CS<'a, F: PrimeField> {
     // sticking out here
     pub_inputs: Vec<Term>,
     pub batch_size: usize,
-    doc: Vec<String>,
+    pub doc: Vec<String>,
     is_match: bool,
     pc: PoseidonConstants<F, typenum::U2>,
     commitment: Option<F>,
@@ -333,20 +333,21 @@ pub struct R1CS<'a, F: PrimeField> {
 
 impl<'a, F: PrimeField> R1CS<'a, F> {
     pub fn new(
-        dfa: &'a DFA,
-        doc: &Vec<String>,
+        nfa: &'a NFA,
+        doc: &String,
         batch_size: usize,
         pcs: PoseidonConstants<F, typenum::U2>,
         batch_override: Option<JBatching>,
         commit_override: Option<JCommit>,
     ) -> Self {
-        let is_match = dfa.is_match(doc).is_some();
+        let strdoc = doc.chars().map(|c|c.to_string()).collect();
+        let is_match = nfa.is_match(&strdoc);
         println!("Match? {:#?}", is_match);
 
         // run cost model (with Poseidon) to decide batching
         let batching = match batch_override {
             None => {
-                opt_cost_model_select(&dfa, batch_size, batch_size, is_match, doc.len())
+                opt_cost_model_select(&nfa, batch_size, batch_size, is_match.is_some(), doc.len())
             }
             Some(b) => b,
         };
@@ -357,14 +358,14 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         };
 
         Self {
-            dfa,
+            nfa,
             batching, // TODO
             commit_type: commit,
             assertions: Vec::new(),
             pub_inputs: Vec::new(),
             batch_size,
-            doc: doc.clone(),
-            is_match,
+            doc: strdoc,
+            is_match: is_match.is_some(),
             pc: pcs,
             commitment: None,
         }
@@ -389,7 +390,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
             SpongeAPI::absorb(
                 &mut sponge,
                 2,
-                &[hash[0], F::from(self.dfa.ab_to_num(&c.to_string()) as u64)],
+                &[hash[0], F::from(self.nfa.ab_to_num(&c.to_string()) as u64)],
                 acc,
             );
             hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
@@ -415,7 +416,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
             SpongeAPI::absorb(
                 &mut sponge,
                 2,
-                &[hash[0], F::from(self.dfa.ab_to_num(&c.to_string()) as u64)],
+                &[hash[0], F::from(self.nfa.ab_to_num(&c.to_string()) as u64)],
                 acc,
             );
             hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
@@ -472,11 +473,11 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
 
         if self.is_match {
             // proof of membership
-            for xi in self.dfa.get_final_states().into_iter() {
+            for xi in self.nfa.get_accepting().into_iter() {
                 out = out || (state == xi);
             }
         } else {
-            for xi in self.dfa.get_non_final_states().into_iter() {
+            for xi in self.nfa.get_non_final_states().into_iter() {
                 out = out || (state == xi);
             }
         }
@@ -504,14 +505,14 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
                                 Op::PfNaryOp(PfNaryOp::Mul),
                                 vec![
                                     new_var(format!("state_{}", i - 1)),
-                                    new_const(self.dfa.nstates() * self.dfa.nchars()),
+                                    new_const(self.nfa.nstates() * self.nfa.nchars()),
                                 ],
                             ),
                             term(
                                 Op::PfNaryOp(PfNaryOp::Mul),
                                 vec![
                                     new_var(format!("state_{}", i)),
-                                    new_const(self.dfa.nchars()),
+                                    new_const(self.nfa.nchars()),
                                 ],
                             ),
                         ],
@@ -532,8 +533,8 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
     fn accepting_state_circuit(&mut self) {
         // final state (non) match check
         let vanishing_poly;
-        let final_states = self.dfa.get_final_states();
-        let non_final_states = self.dfa.get_non_final_states();
+        let final_states = self.nfa.get_accepting();
+        let non_final_states = self.nfa.get_non_final_states();
         let mut vanish_on = vec![];
         let v_time = Instant::now();
         if self.is_match {
@@ -636,13 +637,13 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         let lookup = self.lookup_idxs();
 
         let mut evals = vec![];
-        for (si, c, so) in self.dfa.deltas() {
+        for (si, c, so) in self.nfa.deltas() {
             //println!("trans: {:#?},{:#?},{:#?}", si, c, so);
             evals.push(
                 Integer::from(
-                    (si * self.dfa.nstates() * self.dfa.nchars())
-                        + (so * self.dfa.nchars())
-                        + self.dfa.ab_to_num(&c.to_string()),
+                    (si * self.nfa.nstates() * self.nfa.nchars())
+                        + (so * self.nfa.nchars())
+                        + self.nfa.ab_to_num(&c.to_string()),
                 )
                 .rem_floor(cfg().field().modulus()),
             );
@@ -818,7 +819,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
 
     pub fn to_nlookup(&mut self) -> (ProverData, VerifierData) {
         let lookups = self.lookup_idxs();
-        self.nlookup_gadget(lookups, self.dfa.trans.len(), "nl");
+        self.nlookup_gadget(lookups, self.nfa.trans.len(), "nl");
 
         self.accepting_state_circuit(); // TODO
 
@@ -942,12 +943,12 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
     ) {
         // generate T
         let mut table = vec![];
-        for (ins, c, out) in self.dfa.deltas() {
+        for (ins, c, out) in self.nfa.deltas() {
             table.push(
                 Integer::from(
-                    (ins * self.dfa.nstates() * self.dfa.nchars())
-                        + (out * self.dfa.nchars())
-                        + self.dfa.ab_to_num(&c.to_string()),
+                    (ins * self.nfa.nstates() * self.nfa.nchars())
+                        + (out * self.nfa.nchars())
+                        + self.nfa.ab_to_num(&c.to_string()),
                 )
                 .rem_floor(cfg().field().modulus()),
             );
@@ -964,21 +965,21 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         let mut q = vec![];
         for i in 1..=self.batch_size {
             let c = self.doc[batch_num * self.batch_size + i - 1].clone();
-            next_state = self.dfa.delta(&state_i, &c.to_string()).unwrap();
+            next_state = self.nfa.delta(state_i, &c.to_string()).unwrap();
 
             wits.insert(format!("state_{}", i - 1), new_wit(state_i));
             wits.insert(
                 format!("char_{}", i - 1),
-                new_wit(self.dfa.ab_to_num(&c.to_string())),
+                new_wit(self.nfa.ab_to_num(&c.to_string())),
             );
 
             // v_i = (state_i * (#states*#chars)) + (state_i+1 * #chars) + char_i
 
             //v.push(
             let v_i = Integer::from(
-                (state_i * self.dfa.nstates() * self.dfa.nchars())
-                    + (next_state * self.dfa.nchars())
-                    + self.dfa.ab_to_num(&c.to_string()),
+                (state_i * self.nfa.nstates() * self.nfa.nchars())
+                    + (next_state * self.nfa.nchars())
+                    + self.nfa.ab_to_num(&c.to_string()),
             )
             .rem_floor(cfg().field().modulus());
 
@@ -989,7 +990,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
             /*println!(
                 "state {:#?} -> {:#?} -> state {:#?} is {:#?} in table",
                 state_i,
-                self.dfa.ab_to_num(&c.to_string()),
+                self.nfa.ab_to_num(&c.to_string()),
                 next_state,
                 &q[i - 1]
             );*/
@@ -1008,9 +1009,9 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         while table.len() < base.pow((table.len() as f32).log2().ceil() as u32) {
             table.push(
                 Integer::from(
-                    (self.dfa.nstates() * self.dfa.nstates() * self.dfa.nchars())
-                        + (self.dfa.nstates() * self.dfa.nchars())
-                        + self.dfa.nchars(),
+                    (self.nfa.nstates() * self.nfa.nstates() * self.nfa.nchars())
+                        + (self.nfa.nstates() * self.nfa.nchars())
+                        + self.nfa.nchars(),
                 )
                 .rem_floor(cfg().field().modulus()),
             );
@@ -1067,7 +1068,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         let mut doc = vec![];
         for c in self.doc.clone().into_iter() {
             // todo save this crap somewhere so we don't recalc
-            doc.push(Integer::from(self.dfa.ab_to_num(&c.to_string())));
+            doc.push(Integer::from(self.nfa.ab_to_num(&c.to_string())));
             // .rem_floor(cfg().field().modulus()), // thoughts?
         }
 
@@ -1214,10 +1215,10 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
 
         for i in 0..self.batch_size {
             let doc_i = self.doc[batch_num * self.batch_size + i].clone();
-            next_state = self.dfa.delta(&state_i, &doc_i.clone()).unwrap();
+            next_state = self.nfa.delta(state_i, &doc_i).unwrap();
 
             wits.insert(format!("state_{}", i), new_wit(state_i));
-            wits.insert(format!("char_{}", i), new_wit(self.dfa.ab_to_num(&doc_i)));
+            wits.insert(format!("char_{}", i), new_wit(self.nfa.ab_to_num(&doc_i)));
 
             state_i = next_state;
         }
@@ -1245,7 +1246,7 @@ mod tests {
 
     use crate::backend::costs;
     use crate::backend::r1cs::*;
-    use crate::dfa::DFA;
+    use crate::dfa::NFA;
     use crate::regex::Regex;
     use circ::cfg;
     use circ::cfg::CircOpt;
@@ -1405,8 +1406,8 @@ mod tests {
 
     fn test_func_no_hash(ab: String, rstr: String, doc: String, batch_sizes: Vec<usize>) {
         let r = Regex::new(&rstr);
-        let dfa = DFA::new(&ab[..], r);
-        //println!("{:#?}", dfa);
+        let nfa = NFA::new(&ab[..], r);
+        //println!("{:#?}", nfa);
 
         let chars: Vec<String> = doc.chars().map(|c| c.to_string()).collect();
 
@@ -1418,7 +1419,7 @@ mod tests {
                         Strength::Standard,
                     );
                     let mut r1cs_converter = R1CS::new(
-                        &dfa,
+                        &nfa,
                         &doc.chars().map(|c| c.to_string()).collect(),
                         s,
                         sc,
@@ -1450,7 +1451,7 @@ mod tests {
                     println!("\nBatching {:#?}", r1cs_converter.batching);
                     let (prover_data, _) = r1cs_converter.to_circuit();
 
-                    let mut current_state = dfa.get_init_state();
+                    let mut current_state = nfa.get_init_state();
 
                     let mut values;
                     let mut next_state;
@@ -1482,20 +1483,20 @@ mod tests {
                     println!(
                         "cost model: {:#?}",
                         costs::full_round_cost_model_nohash(
-                            &dfa,
+                            &nfa,
                             s,
                             b.clone(),
-                            dfa.is_match(&chars).is_some()
+                            nfa.is_match(&chars).is_some()
                         )
                     );
                     println!("actual cost: {:#?}", prover_data.r1cs.constraints.len());
                     /*assert!(
                         prover_data.r1cs.constraints().len() as usize
                             <= costs::full_round_cost_model_nohash(
-                                &dfa,
+                                &nfa,
                                 s,
                                 b.clone(),
-                                dfa.is_match(&chars)
+                                nfa.is_match(&chars)
                             )
                     );*/ // needs to be redone again ugh
                 }
@@ -1515,7 +1516,7 @@ mod tests {
     }
 
     #[test]
-    fn dfa_2() {
+    fn nfa_2() {
         init();
         test_func_no_hash(
             "ab".to_string(),
@@ -1538,7 +1539,7 @@ mod tests {
     }
 
     #[test]
-    fn dfa_star() {
+    fn nfa_star() {
         init();
         test_func_no_hash(
             "ab".to_string(),
@@ -1561,7 +1562,7 @@ mod tests {
     }
 
     #[test]
-    fn dfa_non_match() {
+    fn nfa_non_match() {
         init();
         test_func_no_hash("ab".to_string(), "a".to_string(), "b".to_string(), vec![1]);
         test_func_no_hash(
@@ -1581,7 +1582,7 @@ mod tests {
 
     #[test]
     #[should_panic]
-    fn dfa_bad_1() {
+    fn nfa_bad_1() {
         init();
         test_func_no_hash("ab".to_string(), "a".to_string(), "c".to_string(), vec![1]);
     }
