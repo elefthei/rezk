@@ -1,3 +1,7 @@
+// todo move
+type G1 = pasta_curves::pallas::Point;
+type G2 = pasta_curves::vesta::Point;
+
 use crate::backend::costs::{opt_cost_model_select, JBatching, JCommit};
 use crate::dfa::NFA;
 use circ::cfg;
@@ -14,7 +18,7 @@ use neptune::{
     sponge::vanilla::{Mode, Sponge, SpongeTrait},
     Strength,
 };
-use nova_snark::traits::Group;
+use nova_snark::traits::{commitment::*, Group};
 use rug::{
     integer::Order,
     ops::{RemRounding, RemRoundingAssign},
@@ -317,7 +321,7 @@ fn poly_eval_circuit(points: Vec<Integer>, x_lookup: Term) -> Term {
 pub struct R1CS<'a, F: PrimeField> {
     dfa: &'a NFA,
     batching: JBatching,
-    commit_type: JCommit,
+    pub commit_type: JCommit,
     assertions: Vec<Term>,
     // perhaps a misleading name, by "public inputs", we mean "circ leaves these wires exposed from
     // the black box, and will not optimize them away"
@@ -329,7 +333,6 @@ pub struct R1CS<'a, F: PrimeField> {
     is_match: bool,
     pub substring: (usize, usize), // todo getters
     pc: PoseidonConstants<F, typenum::U2>,
-    commitment: Option<(F, F)>, // (start, end)
 }
 
 impl<'a, F: PrimeField> R1CS<'a, F> {
@@ -360,7 +363,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         // TODO ELI: handle substring costs, select batch size correctly
         if batch_size < 1 {
             // default to selecting the optimal
-            sel_batch_size  = opt_batch_size;
+            sel_batch_size = opt_batch_size;
         } else {
             // CLI batch_size override
             sel_batch_size = batch_size;
@@ -407,67 +410,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
             is_match,
             substring,
             pc: pcs,
-            commitment: None,
         }
-    }
-
-    // IN THE CLEAR
-
-    pub fn gen_commitment(&mut self) {
-        match self.commit_type {
-            JCommit::HashChain => {
-                let mut i = 0;
-                let mut start = F::from(0);
-                let mut hash = vec![start.clone()];
-
-                for c in self.doc.clone().into_iter() {
-                    if i == self.substring.0 {
-                        start = hash[0];
-                    }
-                    let mut sponge = Sponge::new_with_constants(&self.pc, Mode::Simplex);
-                    let acc = &mut ();
-
-                    let parameter = IOPattern(vec![SpongeOp::Absorb(2), SpongeOp::Squeeze(1)]);
-                    sponge.start(parameter, None, acc);
-                    SpongeAPI::absorb(
-                        &mut sponge,
-                        2,
-                        &[hash[0], F::from(self.dfa.ab_to_num(&c.to_string()) as u64)],
-                        acc,
-                    );
-                    hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
-                    sponge.finish(acc).unwrap();
-                }
-                println!("commitment = {:#?}", hash.clone());
-                self.commitment = Some((start, hash[0]));
-            }
-            JCommit::Nlookup => todo!(),
-        }
-    }
-
-    pub fn verifier_final_checks(
-        &self,
-        final_hash: Option<F>,
-        accepting_state: F,
-        final_q: Vec<F>,
-        final_v: F,
-    ) {
-        // TODO
-        // commitment matches?
-        if matches!(self.commit_type, JCommit::HashChain) {
-            assert_eq!(self.commitment.unwrap().1, final_hash.unwrap());
-        }
-
-        // state matches?
-        assert_eq!(accepting_state, F::from(1));
-
-        // T claim
-        // generate table TODO - actually, store the table somewhere
-        /*
-        let (_, running_v) =
-            prover_mle_partial_eval(&table, &final_q, &(0..table.len()).collect(), true, None);
-        assert_eq!(final_v, running_v);
-        */
     }
 
     // PROVER
@@ -645,11 +588,9 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         match self.batching {
             JBatching::NaivePolys => self.to_polys(),
             JBatching::Nlookup => self.to_nlookup(),
-            //JBatching::Plookup => todo!(), //gen_wit_i_plookup(round_num, current_state, doc, batch_size),
         }
     }
 
-    // TODO batch size (1 currently)
     fn to_polys(&mut self) -> (ProverData, VerifierData) {
         let l_time = Instant::now();
         let lookup = self.lookup_idxs();
@@ -668,7 +609,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         }
         //println!("eval form poly {:#?}", evals);
 
-        //Makes big polynomial 
+        //Makes big polynomial
         for i in 0..self.batch_size {
             let eq = term(
                 Op::Eq,

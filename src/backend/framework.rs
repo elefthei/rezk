@@ -8,15 +8,164 @@ use circ::cfg::CircOpt;
 use circ::target::r1cs::ProverData;
 use generic_array::typenum;
 use neptune::{
+    poseidon::PoseidonConstants,
     sponge::api::{IOPattern, SpongeAPI, SpongeOp},
     sponge::vanilla::{Mode, Sponge, SpongeTrait},
     Strength,
 };
 use nova_snark::{
-    traits::{circuit::TrivialTestCircuit, Group},
+    provider::pedersen::{Commitment, CommitmentGens},
+    traits::{circuit::TrivialTestCircuit, commitment::*, Group},
     CompressedSNARK, PublicParams, RecursiveSNARK, StepCounterType, FINAL_EXTERNAL_COUNTER,
 };
 use std::time::{Duration, Instant};
+use rand::rngs::OsRng;
+
+pub enum ReefCommitment {
+    HashChain(<G1 as Group>::Scalar),
+    Nlookup(DocCommitmentStruct),
+}
+
+pub struct DocCommitmentStruct {
+    gens_t: CommitmentGens<G1>,
+    gens_v: CommitmentGens<G1>,
+    commit_t: Commitment<G1>, // todo compress
+}
+
+// todo move substring hash crap
+pub fn gen_commitment(
+    commit_type: JCommit,
+    doc: Vec<usize>,
+    pc: &PoseidonConstants<<G1 as Group>::Scalar, typenum::U2>,
+) -> ReefCommitment {
+    type F = <G1 as Group>::Scalar;
+    match commit_type {
+        JCommit::HashChain => {
+            let mut i = 0;
+            let mut start = F::from(0);
+            let mut hash = vec![start.clone()];
+
+            for c in doc.into_iter() {
+                /* if i == self.substring.0 {
+                    start = hash[0];
+                }*/
+                let mut sponge = Sponge::new_with_constants(pc, Mode::Simplex);
+                let acc = &mut ();
+
+                let parameter = IOPattern(vec![SpongeOp::Absorb(2), SpongeOp::Squeeze(1)]);
+                sponge.start(parameter, None, acc);
+                SpongeAPI::absorb(&mut sponge, 2, &[hash[0], F::from(c as u64)], acc);
+                hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
+                sponge.finish(acc).unwrap();
+            }
+            println!("commitment = {:#?}", hash.clone());
+            //self.hash_commitment = Some((start, hash[0]));
+
+            return ReefCommitment::HashChain(hash[0]);
+        }
+        JCommit::Nlookup => {
+            let gens_t = CommitmentGens::<G1>::new(b"nlookup document commitment", doc.len()); // n is dimension
+            let blind = <G1 as Group>::Scalar::random(&mut OsRng);
+            let mut scalars = vec![]; // doc determined at runtime, not compile time
+            let mut i = 0;
+            for c in doc.into_iter() { // this actually needs to be the MLE coeffs :( TODO
+                //clone().into_iter() {
+                scalars.push(<G1 as Group>::Scalar::from(c as u64));
+                i += 1;
+            }
+            let commit_t = <G1 as Group>::CE::commit(&gens, &scalars.into_boxed_slice(), &blind);
+            // TODO compress ?
+            //self.doc_commitement = Some(commitment);
+
+
+            let gens_v = CommitmentGens::<G1>::new(b"nlookup v commitment", 1);
+            return ReefCommitment::Nlookup(DocCommitmentStruct {
+                gens_t,
+    gens_v,
+    commit_t: Commitment<G1>,
+
+
+            });
+        }
+    }
+}
+
+// this crap will need to be seperated out
+pub proof_dot_prod(t_commitment: Commitment<G1>, running_q: Vec<<G1 as Group>::Scalar>, running_v: <G1 as Group>::Scalar) {
+
+    let blind = <G1 as Group>::Scalar::random(&mut OsRng);
+    let v_commitment = CE::<G1>::commit(&gens, &[running_v.clone()], &blind);
+
+    let ipi = InnerProductInstance::new(t_commitment, running_q, v_commitment);
+    
+    let ipw = InnerProductWitness::new();
+
+    let ipa = InnerProductArgument::prove(&GENS, &GENS2, ipi, ipw, transcript)?; // transcript
+                                                                                 // ....?
+
+    ipa.verify(&GENS, &GENS2, XX, ipi?, transcript)?;
+
+}
+
+pub fn final_clear_checks(
+    eval_type: JBatching,
+    reef_commitment: ReefCommitment,
+    accepting_state: <G1 as Group>::Scalar,
+    final_q: Option<Vec<<G1 as Group>::Scalar>>,
+    final_v: Option<<G1 as Group>::Scalar>,
+    final_doc_q: Option<Vec<<G1 as Group>::Scalar>>,
+    final_doc_v: Option<<G1 as Group>::Scalar>,
+) {
+    type F = <G1 as Group>::Scalar;
+    // TODO
+    // commitment matches?
+    /*if matches!(commit_type, JCommit::HashChain) {
+            assert_eq!(self.hash_commitment.unwrap().1, final_hash.unwrap());
+        }
+    */
+    // state matches?
+    assert_eq!(accepting_state, F::from(1));
+
+    match (final_q, final_v) {
+        (Some(q), Some(v)) => todo!(),
+        (Some(_), None) => {
+            panic!("only half of running claim recieved");
+        }
+        (None, Some(_)) => {
+            panic!("only half of running claim recieved");
+        }
+        (None, None) => {
+            if matches!(eval_type, JBatching::Nlookup) {
+                panic!("nlookup evaluation used, but no running claim provided for verification");
+            }
+        }
+    }
+
+    match (final_doc_q, final_doc_v) {
+        (Some(q), Some(v)) => todo!(),
+        (Some(_), None) => {
+            panic!("only half of running claim recieved");
+        }
+        (None, Some(_)) => {
+            panic!("only half of running claim recieved");
+        }
+        (None, None) => {
+            if matches!(reef_commitment, ReefCommitment::Nlookup(_)) {
+                panic!(
+                    "nlookup doc commitment used, but no running claim provided for verification"
+                );
+            }
+        }
+    }
+
+    // T claim
+    // generate table TODO - actually, store the table somewhere
+    /*
+    let (_, running_v) =
+        prover_mle_partial_eval(&table, &final_q, &(0..table.len()).collect(), true, None);
+    assert_eq!(final_v, running_v);
+    */
+}
 
 // gen R1CS object, commitment, make step circuit for nova
 pub fn run_backend(
@@ -38,9 +187,14 @@ pub fn run_backend(
     );
     //let parse_ms = p_time.elapsed().as_millis();
 
+    // doc to usizes - can I use this elsewhere too? TODO
+    let mut usize_doc = vec![];
+    for c in doc.clone().into_iter() {
+        usize_doc.push(dfa.ab_to_num(&c.to_string()));
+    }
     let c_time = Instant::now();
     println!("generate commitment");
-    r1cs_converter.gen_commitment();
+    let reef_commit = gen_commitment(r1cs_converter.commit_type, usize_doc, &sc);
     let commit_ms = c_time.elapsed().as_millis();
 
     let r_time = Instant::now();
@@ -308,7 +462,7 @@ mod tests {
         }
     }
 
-    // #[test]
+    #[test]
     fn e2e_simple() {
         backend_test(
             "ab".to_string(),
@@ -320,7 +474,7 @@ mod tests {
         );
     }
 
-    // #[test]
+    #[test]
     fn e2e_nlookup() {
         backend_test(
             "ab".to_string(),
