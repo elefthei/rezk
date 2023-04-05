@@ -199,6 +199,13 @@ fn prover_mle_partial_eval(
     )
 }
 
+// external full "partial" eval for table check
+pub fn verifier_mle_eval(table: &Vec<Integer>, q: &Vec<Integer>) -> Integer {
+    let (_, con) = prover_mle_partial_eval(table, q, &(0..table.len()).collect(), true, None);
+
+    con
+}
+
 // for sum check, computes the sum of many mle univar slices
 // takes raw table (pre mle'd), and rands = [r_0, r_1,...], leaving off the hole and x_i's
 fn prover_mle_sum_eval(
@@ -320,6 +327,7 @@ fn poly_eval_circuit(points: Vec<Integer>, x_lookup: Term) -> Term {
 
 pub struct R1CS<'a, F: PrimeField> {
     dfa: &'a NFA,
+    table: Vec<Integer>,
     batching: JBatching,
     pub commit_type: JCommit,
     assertions: Vec<Term>,
@@ -399,8 +407,22 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
 
         println!("'substring': {:#?}", substring);
 
+        // generate T
+        let mut table = vec![];
+        for (ins, c, out) in dfa.deltas() {
+            table.push(
+                Integer::from(
+                    (ins * dfa.nstates() * dfa.nchars())
+                        + (out * dfa.nchars())
+                        + dfa.ab_to_num(&c.to_string()),
+                )
+                .rem_floor(cfg().field().modulus()),
+            );
+        }
+
         Self {
             dfa,
+            table,
             batching, // TODO
             commit_type: commit,
             assertions: Vec::new(),
@@ -921,21 +943,6 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         Option<Vec<Integer>>,
         Option<Integer>,
     ) {
-        // generate T
-        let mut table = vec![];
-        for (ins, c, out) in self.dfa.deltas() {
-            table.push(
-                Integer::from(
-                    (ins * self.dfa.nstates() * self.dfa.nchars())
-                        + (out * self.dfa.nchars())
-                        + self.dfa.ab_to_num(&c.to_string()),
-                )
-                .rem_floor(cfg().field().modulus()),
-            );
-        }
-
-        //println!("TABLE {:#?}", table);
-
         let mut wits = FxHashMap::default();
 
         // generate claim v's (well, v isn't a real named var, generate the states/chars)
@@ -963,7 +970,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
             )
             .rem_floor(cfg().field().modulus());
 
-            q.push(table.iter().position(|val| val == &v_i).unwrap());
+            q.push(self.table.iter().position(|val| val == &v_i).unwrap());
 
             //println!("vi = {:#?}", v_i);
 
@@ -1001,7 +1008,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         assert!(running_q.is_some() || batch_num == 0);
         assert!(running_v.is_some() || batch_num == 0);
         let (w, next_running_q, next_running_v) =
-            self.wit_nlookup_gadget(wits, table, q, running_q, running_v, "nl");
+            self.wit_nlookup_gadget(wits, self.table, q, running_q, running_v, "nl");
         wits = w;
         //println!("next running q out of main {:#?}", next_running_q.clone());
 

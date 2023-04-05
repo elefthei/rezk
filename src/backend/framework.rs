@@ -6,6 +6,7 @@ use crate::dfa::NFA;
 use circ::cfg;
 use circ::cfg::CircOpt;
 use circ::target::r1cs::ProverData;
+use ff::Field;
 use generic_array::typenum;
 use neptune::{
     poseidon::PoseidonConstants,
@@ -14,12 +15,19 @@ use neptune::{
     Strength,
 };
 use nova_snark::{
-    provider::pedersen::{Commitment, CommitmentGens},
-    traits::{circuit::TrivialTestCircuit, commitment::*, Group},
+    errors::NovaError,
+    provider::{
+        ipa_pc::EvaluationEngine,
+        pedersen::{Commitment, CommitmentGens},
+    },
+    traits::{
+        circuit::TrivialTestCircuit, commitment::*, evaluation::EvaluationEngineTrait, Group,
+    },
     CompressedSNARK, PublicParams, RecursiveSNARK, StepCounterType, FINAL_EXTERNAL_COUNTER,
 };
-use std::time::{Duration, Instant};
 use rand::rngs::OsRng;
+use rug::{integer::Order, Integer};
+use std::time::{Duration, Instant};
 
 pub enum ReefCommitment {
     HashChain(<G1 as Group>::Scalar),
@@ -27,9 +35,10 @@ pub enum ReefCommitment {
 }
 
 pub struct DocCommitmentStruct {
-    gens_t: CommitmentGens<G1>,
-    gens_v: CommitmentGens<G1>,
+    gens: CommitmentGens<G1>,
     commit_t: Commitment<G1>, // todo compress
+    vec_t: Vec<<G1 as Group>::Scalar>,
+    decommit_t: <G1 as Group>::Scalar,
 }
 
 // todo move substring hash crap
@@ -68,66 +77,85 @@ pub fn gen_commitment(
             let blind = <G1 as Group>::Scalar::random(&mut OsRng);
             let mut scalars = vec![]; // doc determined at runtime, not compile time
             let mut i = 0;
-            for c in doc.into_iter() { // this actually needs to be the MLE coeffs :( TODO
+            for c in doc.into_iter() {
+                // this actually needs to be the MLE coeffs :( TODO
                 //clone().into_iter() {
                 scalars.push(<G1 as Group>::Scalar::from(c as u64));
                 i += 1;
             }
-            let commit_t = <G1 as Group>::CE::commit(&gens, &scalars.into_boxed_slice(), &blind);
+            let commit_t = <G1 as Group>::CE::commit(&gens_t, &scalars.into_boxed_slice(), &blind);
             // TODO compress ?
             //self.doc_commitement = Some(commitment);
 
+            let doc_commit = DocCommitmentStruct {
+                gens: gens_t,
+                commit_t: commit_t,
+                vec_t: scalars,
+                decommit_t: blind,
+            };
 
-            let gens_v = CommitmentGens::<G1>::new(b"nlookup v commitment", 1);
-            return ReefCommitment::Nlookup(DocCommitmentStruct {
-                gens_t,
-    gens_v,
-    commit_t: Commitment<G1>,
-
-
-            });
+            return ReefCommitment::Nlookup(doc_commit);
         }
     }
 }
-
 // this crap will need to be seperated out
-pub proof_dot_prod(t_commitment: Commitment<G1>, running_q: Vec<<G1 as Group>::Scalar>, running_v: <G1 as Group>::Scalar) {
+pub fn proof_dot_prod(
+    dc: DocCommitmentStruct,
+    running_q: Vec<<G1 as Group>::Scalar>,
+    running_v: <G1 as Group>::Scalar,
+) -> Result<(), NovaError> {
+    let mut transcript = G1::TE::new(b"dot_prod_proof");
 
-    let blind = <G1 as Group>::Scalar::random(&mut OsRng);
-    let v_commitment = CE::<G1>::commit(&gens, &[running_v.clone()], &blind);
+    let ee = EvaluationEngine::setup(&dc.gens);
 
-    let ipi = InnerProductInstance::new(t_commitment, running_q, v_commitment);
-    
-    let ipw = InnerProductWitness::new();
+    let eval_arg = EvaluationEngine::prove_batch(
+        &dc.gens,
+        transcript,
+        &dc.commit_t,
+        &dc.vec_t,
+        &dc.decommit_t,
+        running_q,
+        running_v,
+    );
 
-    let ipa = InnerProductArgument::prove(&GENS, &GENS2, ipi, ipw, transcript)?; // transcript
-                                                                                 // ....?
-
-    ipa.verify(&GENS, &GENS2, XX, ipi?, transcript)?;
-
+    EvaluationEngine::verify_batch(&dc.gens, transcript, &dc.commit_t, running_q, &eval_arg)
 }
 
 pub fn final_clear_checks(
     eval_type: JBatching,
     reef_commitment: ReefCommitment,
     accepting_state: <G1 as Group>::Scalar,
+    table: &Vec<Integer>,
+    final_hash: Option<<G1 as Group>::Scalar>,
     final_q: Option<Vec<<G1 as Group>::Scalar>>,
     final_v: Option<<G1 as Group>::Scalar>,
     final_doc_q: Option<Vec<<G1 as Group>::Scalar>>,
     final_doc_v: Option<<G1 as Group>::Scalar>,
 ) {
     type F = <G1 as Group>::Scalar;
-    // TODO
-    // commitment matches?
-    /*if matches!(commit_type, JCommit::HashChain) {
-            assert_eq!(self.hash_commitment.unwrap().1, final_hash.unwrap());
-        }
-    */
+
     // state matches?
     assert_eq!(accepting_state, F::from(1));
 
+    // nlookup eval T check
     match (final_q, final_v) {
-        (Some(q), Some(v)) => todo!(),
+        (Some(q), Some(v)) => {
+            // T is in the clear for this case
+            match eval_type {
+                JBatching::NaivePolys => {
+                    panic!(
+                        "naive poly evaluation used, but running claim provided for verification"
+                    );
+                }
+                JBatching::Nlookup => {
+                    let mut q_i = vec![];
+                    for f in q {
+                        q_i.push(Integer::from_digits(f.to_repr().as_ref(), Order::Lsf));
+                    }
+                    assert_eq!(verifier_mle_eval(table, &q), v);
+                }
+            }
+        }
         (Some(_), None) => {
             panic!("only half of running claim recieved");
         }
@@ -141,30 +169,36 @@ pub fn final_clear_checks(
         }
     }
 
-    match (final_doc_q, final_doc_v) {
-        (Some(q), Some(v)) => todo!(),
-        (Some(_), None) => {
-            panic!("only half of running claim recieved");
+    // todo vals align
+    // hash chain commitment check
+    match reef_commitment {
+        ReefCommitment::HashChain(h) => {
+            // todo substring
+            assert_eq!(h, final_hash.unwrap());
         }
-        (None, Some(_)) => {
-            panic!("only half of running claim recieved");
-        }
-        (None, None) => {
-            if matches!(reef_commitment, ReefCommitment::Nlookup(_)) {
-                panic!(
+        ReefCommitment::Nlookup(dc) => {
+            // or - nlookup commitment check
+            match (final_doc_q, final_doc_v) {
+                (Some(q), Some(v)) => {
+                    // Doc is commited to in this case
+                    assert!(proof_dot_prod(dc, q, v).is_ok());
+                }
+                (Some(_), None) => {
+                    panic!("only half of running claim recieved");
+                }
+                (None, Some(_)) => {
+                    panic!("only half of running claim recieved");
+                }
+                (None, None) => {
+                    panic!(
                     "nlookup doc commitment used, but no running claim provided for verification"
                 );
+                }
             }
         }
     }
 
-    // T claim
-    // generate table TODO - actually, store the table somewhere
-    /*
-    let (_, running_v) =
-        prover_mle_partial_eval(&table, &final_q, &(0..table.len()).collect(), true, None);
-    assert_eq!(final_v, running_v);
-    */
+    println!("Final values confirmed in the clear!");
 }
 
 // gen R1CS object, commitment, make step circuit for nova

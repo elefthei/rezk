@@ -28,7 +28,12 @@ fn main() {
     println!("dfa: {:#?}", nfa);
 
     // Input document
-    let doc: Vec<String> = opt.config.read_doc().iter().map(|c|c.to_string()).collect();
+    let doc: Vec<String> = opt
+        .config
+        .read_doc()
+        .iter()
+        .map(|c| c.to_string())
+        .collect();
 
     #[cfg(feature = "plot")]
     plot::plot_nfa(&nfa).expect("Failed to plot DFA to a pdf file");
