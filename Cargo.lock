@@ -1978,6 +1978,7 @@ dependencies = [
  "gmp-mpfr-sys",
  "hashconsing",
  "itertools 0.10.5",
+ "merlin",
  "neptune",
  "nova-snark",
  "prettyprint",

@@ -6,8 +6,9 @@ use crate::dfa::NFA;
 use circ::cfg;
 use circ::cfg::CircOpt;
 use circ::target::r1cs::ProverData;
-use ff::Field;
+use ff::{Field, PrimeField};
 use generic_array::typenum;
+use merlin::Transcript;
 use neptune::{
     poseidon::PoseidonConstants,
     sponge::api::{IOPattern, SpongeAPI, SpongeOp},
@@ -17,7 +18,7 @@ use neptune::{
 use nova_snark::{
     errors::NovaError,
     provider::{
-        ipa_pc::EvaluationEngine,
+        ipa_pc::{EvaluationEngine, EvaluationGens},
         pedersen::{Commitment, CommitmentGens},
     },
     traits::{
@@ -83,7 +84,8 @@ pub fn gen_commitment(
                 scalars.push(<G1 as Group>::Scalar::from(c as u64));
                 i += 1;
             }
-            let commit_t = <G1 as Group>::CE::commit(&gens_t, &scalars.into_boxed_slice(), &blind);
+            let commit_t =
+                <G1 as Group>::CE::commit(&gens_t, &scalars.clone().into_boxed_slice(), &blind);
             // TODO compress ?
             //self.doc_commitement = Some(commitment);
 
@@ -104,21 +106,27 @@ pub fn proof_dot_prod(
     running_q: Vec<<G1 as Group>::Scalar>,
     running_v: <G1 as Group>::Scalar,
 ) -> Result<(), NovaError> {
-    let mut transcript = G1::TE::new(b"dot_prod_proof");
+    let mut transcript = Transcript::new(b"dot_prod_proof");
 
-    let ee = EvaluationEngine::setup(&dc.gens);
+    let ee: EvaluationGens<G1> = EvaluationEngine::setup(&dc.gens);
 
     let eval_arg = EvaluationEngine::prove_batch(
-        &dc.gens,
-        transcript,
-        &dc.commit_t,
-        &dc.vec_t,
-        &dc.decommit_t,
-        running_q,
-        running_v,
-    );
+        &ee,
+        &mut transcript,
+        &[dc.commit_t],
+        &[dc.vec_t],
+        &[dc.decommit_t],
+        &[running_q.clone()],
+        &[running_v],
+    )?;
 
-    EvaluationEngine::verify_batch(&dc.gens, transcript, &dc.commit_t, running_q, &eval_arg)
+    EvaluationEngine::verify_batch(
+        &ee,
+        &mut transcript,
+        &[dc.commit_t],
+        &[running_q],
+        &eval_arg,
+    )
 }
 
 pub fn final_clear_checks(
@@ -152,7 +160,11 @@ pub fn final_clear_checks(
                     for f in q {
                         q_i.push(Integer::from_digits(f.to_repr().as_ref(), Order::Lsf));
                     }
-                    assert_eq!(verifier_mle_eval(table, &q), v);
+                    // TODO mle eval over F
+                    assert_eq!(
+                        verifier_mle_eval(table, &q_i),
+                        (Integer::from_digits(v.to_repr().as_ref(), Order::Lsf))
+                    );
                 }
             }
         }
@@ -497,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn e2e_simple() {
+    fn e2e_poly_hash() {
         backend_test(
             "ab".to_string(),
             "^a*b*$".to_string(),
@@ -509,7 +521,19 @@ mod tests {
     }
 
     #[test]
-    fn e2e_nlookup() {
+    fn e2e_poly_nl() {
+        backend_test(
+            "ab".to_string(),
+            "^a*b*$".to_string(),
+            "aaabbb".to_string(),
+            JBatching::NaivePolys,
+            JCommit::Nlookup,
+            vec![2],
+        );
+    }
+
+    #[test]
+    fn e2e_nl_hash() {
         backend_test(
             "ab".to_string(),
             "^a*b*$".to_string(),
@@ -518,13 +542,17 @@ mod tests {
             JCommit::HashChain,
             vec![2],
         );
-        /*    backend_test(
+    }
+
+    #[test]
+    fn e2e_nl_nl() {
+        backend_test(
             "ab".to_string(),
             "a*b*".to_string(),
             "aaabbb".to_string(),
             JBatching::Nlookup,
             JCommit::Nlookup,
             vec![2],
-        );*/
+        );
     }
 }

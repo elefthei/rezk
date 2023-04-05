@@ -1008,7 +1008,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         assert!(running_q.is_some() || batch_num == 0);
         assert!(running_v.is_some() || batch_num == 0);
         let (w, next_running_q, next_running_v) =
-            self.wit_nlookup_gadget(wits, self.table, q, running_q, running_v, "nl");
+            self.wit_nlookup_gadget(wits, &self.table, q, running_q, running_v, "nl");
         wits = w;
         //println!("next running q out of main {:#?}", next_running_q.clone());
 
@@ -1069,7 +1069,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         }
 
         let (w, next_running_q, next_running_v) =
-            self.wit_nlookup_gadget(wits, doc, q, running_q, running_v, "nl_doc");
+            self.wit_nlookup_gadget(wits, &doc, q, running_q, running_v, "nl_doc");
         wits = w;
 
         (wits, next_running_q, next_running_v)
@@ -1078,7 +1078,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
     fn wit_nlookup_gadget(
         &self,
         mut wits: FxHashMap<String, Value>,
-        table: Vec<Integer>,
+        table: &Vec<Integer>,
         q: Vec<usize>,
         //v: Vec<Integer>,
         running_q: Option<Vec<Integer>>,
