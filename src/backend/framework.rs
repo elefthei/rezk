@@ -250,12 +250,29 @@ pub fn run_backend(
 
     let s_time = Instant::now();
     // use "empty" (witness-less) circuit to generate nova F
+    let hashes = match r1cs_converter.commit_type {
+        JCommit::HashChain => Some(vec![<G1 as Group>::Scalar::from(0); 2]),
+        JCommit::Nlookup => None,
+    };
+    let rc_vars = match r1cs_converter.eval_type {
+        JBatching::NaivePolys => None,
+        JBatching::Nlookup => Some(vec![vec![<G1 as Group>::Scalar::from(0); SC_L + 1]; 2]), // TODO
+                                                                                             // eli
+                                                                                             // function
+    };
+    let rc_doc_vars = match r1cs_converter.commit_type {
+        JCommit::HashChain => None,
+        JCommit::Nlookup => Some(vec![vec![<G1 as Group>::Scalar::from(0); SC_L + 1]; 2]),
+    };
+
     let circuit_primary: NFAStepCircuit<<G1 as Group>::Scalar> = NFAStepCircuit::new(
         &prover_data,
         None,
         vec![<G1 as Group>::Scalar::from(0); 2],
         vec![<G1 as Group>::Scalar::from(0); 2],
-        vec![<G1 as Group>::Scalar::from(0); 2],
+        hashes,
+        rc_vars,
+        rc_doc_vars,
         r1cs_converter.batch_size,
         sc.clone(),
     );
@@ -291,6 +308,8 @@ pub fn run_backend(
     );
 
     let mut current_state = dfa.get_init_state();
+
+    // TODO
     let z0_primary = vec![
         <G1 as Group>::Scalar::from(current_state as u64),
         <G1 as Group>::Scalar::from(dfa.ab_to_num(&doc[0]) as u64),
@@ -321,8 +340,12 @@ pub fn run_backend(
     let mut wits;
     let mut running_q = None;
     let mut running_v = None;
+    let mut next_running_q = None;
+    let mut next_running_v = None;
     let mut doc_running_q = None;
     let mut doc_running_v = None;
+    let mut next_doc_running_q = None;
+    let mut next_doc_running_v = None;
 
     let mut next_state = 0; //dfa.get init state ??
     for i in 0..num_steps {
@@ -332,10 +355,10 @@ pub fn run_backend(
         (
             wits,
             next_state,
-            running_q,
-            running_v,
-            doc_running_q,
-            doc_running_v,
+            next_running_q,
+            next_running_v,
+            next_doc_running_q,
+            next_doc_running_v,
         ) = r1cs_converter.gen_wit_i(
             i,
             next_state,
@@ -359,36 +382,91 @@ pub fn run_backend(
         };
         //println!("next char = {}", next_char);
 
-        // todo put this in r1cs
-        let mut next_hash = <G1 as Group>::Scalar::from(0);
-        let mut intm_hash = prev_hash;
-        for b in 0..r1cs_converter.batch_size {
-            // expected poseidon
-            let mut sponge = Sponge::new_with_constants(&sc, Mode::Simplex);
-            let acc = &mut ();
+        let hashes = match r1cs_converter.commit_type {
+            JCommit::HashChain => {
+                // todo put this in r1cs
+                let mut next_hash = <G1 as Group>::Scalar::from(0);
+                let mut intm_hash = prev_hash;
+                for b in 0..r1cs_converter.batch_size {
+                    // expected poseidon
+                    let mut sponge = Sponge::new_with_constants(&sc, Mode::Simplex);
+                    let acc = &mut ();
 
-            sponge.start(parameter.clone(), None, acc);
-            SpongeAPI::absorb(
-                &mut sponge,
-                2,
-                &[
-                    intm_hash,
-                    <G1 as Group>::Scalar::from(
-                        dfa.ab_to_num(&doc[i * r1cs_converter.batch_size + b].clone()) as u64,
-                    ),
-                ],
-                acc,
-            );
-            let expected_next_hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
-            println!(
-                "prev, expected next hash in main {:#?} {:#?}",
-                prev_hash, expected_next_hash
-            );
-            sponge.finish(acc).unwrap(); // assert expected hash finished correctly
+                    sponge.start(parameter.clone(), None, acc);
+                    SpongeAPI::absorb(
+                        &mut sponge,
+                        2,
+                        &[
+                            intm_hash,
+                            <G1 as Group>::Scalar::from(
+                                dfa.ab_to_num(&doc[i * r1cs_converter.batch_size + b].clone())
+                                    as u64,
+                            ),
+                        ],
+                        acc,
+                    );
+                    let expected_next_hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
+                    println!(
+                        "prev, expected next hash in main {:#?} {:#?}",
+                        prev_hash, expected_next_hash
+                    );
+                    sponge.finish(acc).unwrap(); // assert expected hash finished correctly
 
-            next_hash = expected_next_hash[0];
-            intm_hash = next_hash;
-        }
+                    next_hash = expected_next_hash[0];
+                    intm_hash = next_hash;
+                }
+
+                let out = Some(vec![
+                    <G1 as Group>::Scalar::from(prev_hash),
+                    <G1 as Group>::Scalar::from(next_hash),
+                ]);
+
+                prev_hash = next_hash;
+
+                out
+            }
+            JCommit::Nlookup => None,
+        };
+
+        let rc_vars = match r1cs_converter.eval_type {
+            JBatching::NaivePolys => None,
+            JBatching::Nlookup => {
+                let qv_prev = running_q
+                    .unwrap()
+                    .into_iter()
+                    .map(|x| int_to_ff(x))
+                    .collect();
+                qv_prev.push(int_to_ff(running_v.unwrap()));
+                let qv_next = next_running_q
+                    .unwrap()
+                    .into_iter()
+                    .map(|x| int_to_ff(x))
+                    .collect();
+                qv_next.push(int_to_ff(next_running_v.unwrap()));
+
+                Some(vec![qv_prev, qv_next])
+            }
+        };
+
+        let rc_doc_vars = match r1cs_converter.commit_type {
+            JCommit::HashChain => None,
+            JCommit::Nlookup => {
+                let qv_doc_prev = doc_running_q
+                    .unwrap()
+                    .into_iter()
+                    .map(|x| int_to_ff(x))
+                    .collect();
+                qv_doc_prev.push(int_to_ff(doc_running_v.unwrap()));
+                let qv_doc_next = next_doc_running_q
+                    .unwrap()
+                    .into_iter()
+                    .map(|x| int_to_ff(x))
+                    .collect();
+                qv_doc_next.push(int_to_ff(next_doc_running_v.unwrap()));
+
+                Some(vec![qv_doc_prev, qv_doc_next])
+            }
+        };
 
         let circuit_primary: NFAStepCircuit<<G1 as Group>::Scalar> = NFAStepCircuit::new(
             &prover_data,
@@ -401,10 +479,9 @@ pub fn run_backend(
                 <G1 as Group>::Scalar::from(dfa.ab_to_num(&current_char) as u64),
                 <G1 as Group>::Scalar::from(dfa.ab_to_num(&next_char) as u64),
             ],
-            vec![
-                <G1 as Group>::Scalar::from(prev_hash),
-                <G1 as Group>::Scalar::from(next_hash),
-            ],
+            hashes,
+            rc_vars,
+            rc_doc_vars,
             r1cs_converter.batch_size,
             sc.clone(),
         );
@@ -429,7 +506,11 @@ pub fn run_backend(
 
         // for next i+1 round
         current_state = next_state;
-        prev_hash = next_hash;
+        //prev_hash = next_hash;
+        running_q = next_running_q;
+        running_v = next_running_v;
+        doc_running_q = next_doc_running_q;
+        doc_running_v = next_doc_running_v;
     }
 
     assert!(recursive_snark.is_some());

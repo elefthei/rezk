@@ -662,7 +662,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
     // eq([x0,x1,x2...],[e0,e1,e2...])
     fn bit_eq_circuit(&mut self, m: usize, q_bit: usize, id: &str) -> Term {
         let mut eq = new_const(1); // dummy, not used
-        let q_name = format!("{}_eq{}", id, q_bit);
+        let q_name = format!("{}_eq_{}", id, q_bit);
         for i in 0..m {
             let next = term(
                 Op::PfNaryOp(PfNaryOp::Add),
@@ -923,7 +923,6 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
                 prev_doc_running_claim_q,
                 prev_doc_running_claim_v,
             ),
-            //JBatching::Plookup => todo!(), //gen_wit_i_plookup(round_num, current_state, doc, batch_size),
         }
     }
 
@@ -1148,7 +1147,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         // generate last round eqs
         for i in 0..self.batch_size {
             // regular
-            let q_name = format!("{}_eq{}", id, i);
+            let q_name = format!("{}_eq_{}", id, i);
             for j in 0..sc_l {
                 let qj = (q[i] >> j) & 1;
                 wits.insert(format!("{}_q_{}", q_name, (sc_l - 1 - j)), new_wit(qj));
@@ -1156,7 +1155,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         }
         for j in 0..sc_l {
             // running
-            let q_name = format!("{}_eq{}", id, q.len()); //v.len() - 1);
+            let q_name = format!("{}_eq_{}", id, q.len()); //v.len() - 1);
             wits.insert(
                 format!("{}_q_{}", q_name, j),
                 new_wit(prev_running_q[j].clone()),

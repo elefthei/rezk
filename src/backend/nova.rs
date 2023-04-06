@@ -118,13 +118,13 @@ pub struct NFAStepCircuit<'a, F: PrimeField> {
     states: Vec<F>,
     chars: Vec<F>,
     hashes: Option<Vec<F>>,
-    running_claims: Option<Vec<Vec<F>>>, // vec = [v, q0, q1, ...]
+    running_claims: Option<Vec<Vec<F>>>, // vec = [q0, q1, ..., v]
     running_doc_claims: Option<Vec<Vec<F>>>,
     pc: PoseidonConstants<F, typenum::U2>,
 }
 
 // note that this will generate a single round, and no witnesses, unlike nova example code
-// witness and loops will happen at higher level as to put as little as possible deep in circ
+// witness and loops will happen at higher level as to put as little as possible deep in here
 impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
     pub fn new(
         prover_data: &'a ProverData,
@@ -132,7 +132,7 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
         states: Vec<F>,
         chars: Vec<F>,
         hashes: Option<Vec<F>>,
-        running_claims: Option<Vec<Vec<F>>>, // vec = [v, q0, q1, ...]
+        running_claims: Option<Vec<Vec<F>>>, // vec = [q0, q1, ..., v]
         running_doc_claims: Option<Vec<Vec<F>>>,
         batch_size: usize,
         pcs: PoseidonConstants<F, typenum::U2>,
@@ -261,7 +261,6 @@ where
         // inputs
         let state_0 = z[0].clone();
         let char_0 = z[1].clone();
-        //let hash_0 = z[2].clone();
 
         //println!("current_state: {:#?}", current_state.get_value());
         //println!("current_char: {:#?}", current_char.get_value());
@@ -269,7 +268,7 @@ where
 
         // ouputs
         let mut last_state = None;
-        //let mut next_hash = None;
+        let mut last_hash = None;
 
         // for nova passing (new inputs from prover, not provided by circ prover, so to speak)
         let last_char = AllocatedNum::alloc(cs.namespace(|| "last_char"), || Ok(self.chars[1]))?;
@@ -278,8 +277,8 @@ where
         // intms
         let mut char_vars = vec![None; self.batch_size];
 
-        let mut next_eval_claim = vec![None; self.running_claim.unwrap()[0].len()];
-        let mut next_doc_claim = vec![None; self.running_doc_claims.unwrap()[0].len()];
+        let mut rc_vars = vec![None; self.running_claims.unwrap()[0].len()];
+        let mut rc_doc_vars = vec![None; self.running_doc_claims.unwrap()[0].len()];
 
         // convert
         let f_mod = get_modulus::<F>(); // TODO
@@ -335,9 +334,42 @@ where
                 let alloc_v = AllocatedNum::alloc(cs.namespace(name_f), val_f)?;
                 last_state = Some(alloc_v); //.get_variable();
                 vars.insert(var, last_state.clone().unwrap().get_variable());
+            } else if s.starts_with("nl_prev_running_claim") {
+                // v
+                let alloc_v = AllocatedNum::alloc(cs.namespace(name_f), val_f)?;
+
+                rc_vars[rc_vars.len() - 1] = Some(alloc_v);
+                vars.insert(var, alloc_v.get_variable());
+            } else if s.starts_with(&format!("nl_eq_{}", self.batch_size)) {
+                // nl_eq_<NUM>_q_<NUM>
+                // q
+                let s_sub: Vec<&str> = s.split("_").collect();
+                let q: usize = s_sub[4].parse().unwrap();
+
+                let alloc_v = AllocatedNum::alloc(cs.namespace(name_f), val_f)?;
+
+                rc_vars[q] = Some(alloc_v);
+                vars.insert(var, alloc_v.get_variable());
+            } else if s.starts_with("nl_doc_prev_running_claim") {
+                // doc v
+                let alloc_v = AllocatedNum::alloc(cs.namespace(name_f), val_f)?;
+
+                rc_doc_vars[rc_vars.len() - 1] = Some(alloc_v);
+                vars.insert(var, alloc_v.get_variable());
+            } else if s.starts_with(&format!("nl_doc_eq_{}", self.batch_size)) {
+                // nl_eq_<NUM>_q_<NUM>
+                // q
+                let s_sub: Vec<&str> = s.split("_").collect();
+                let q: usize = s_sub[5].parse().unwrap();
+
+                let alloc_v = AllocatedNum::alloc(cs.namespace(name_f), val_f)?;
+
+                rc_vars[q] = Some(alloc_v);
+                vars.insert(var, alloc_v.get_variable());
 
             // sumcheck hashes
             } else if s.starts_with("nl_claim_r") {
+                println!("adding nlookup eval hashes in nova");
                 //println!("NL CLAIM R hook");
                 //let mut ns = cs.namespace(name_f);
                 // original var
@@ -394,6 +426,7 @@ where
                     |z| z + new_pos.get_variable(),
                 );
             } else if s.starts_with("nl_sc_r_") {
+                println!("adding nlookup eval hashes in nova");
                 // original var
                 let alloc_v = AllocatedNum::alloc(cs.namespace(name_f), val_f)?; //Ok(new_pos.get_value().unwrap()))?;
                 vars.insert(var, alloc_v.get_variable());
@@ -442,6 +475,7 @@ where
                     |z| z + new_pos.get_variable(),
                 );
             } else if s.starts_with("nl_doc_claim_r") {
+                println!("adding doc commit hashes in nova");
                 //println!("NL CLAIM R hook");
                 //let mut ns = cs.namespace(name_f);x
                 // original var
@@ -496,6 +530,7 @@ where
                     |z| z + new_pos.get_variable(),
                 );
             } else if s.starts_with("nl_doc_sc_r_") {
+                println!("adding doc commit hashes in nova");
                 // original var
                 let alloc_v = AllocatedNum::alloc(cs.namespace(name_f), val_f)?; //Ok(new_pos.get_value().unwrap()))?;
                 vars.insert(var, alloc_v.get_variable());
@@ -595,49 +630,54 @@ where
         // line 31 ish
 
         // hash commit
-        let mut next_hash = hash_0.clone(); // TODO get rid
-                                            //if self.hashes.is_some() {
-                                            // we want a hash commit, and not nlookup doc commit
-                                            // circuit poseidon
+        if self.hashes.is_some() {
+            println!("adding hash chain hashes in nova");
+            let mut next_hash = z[2].clone();
 
-        for i in 0..(self.batch_size) {
-            let mut ns = cs.namespace(|| format!("poseidon hash ns batch {}", i));
-            //println!("i {:#?}", i);
-            next_hash = {
-                let mut sponge = SpongeCircuit::new_with_constants(&self.pc, Mode::Simplex);
-                let acc = &mut ns;
+            for i in 0..(self.batch_size) {
+                let mut ns = cs.namespace(|| format!("poseidon hash ns batch {}", i));
+                //println!("i {:#?}", i);
+                next_hash = {
+                    let mut sponge = SpongeCircuit::new_with_constants(&self.pc, Mode::Simplex);
+                    let acc = &mut ns;
 
-                sponge.start(
-                    IOPattern(vec![SpongeOp::Absorb(2), SpongeOp::Squeeze(1)]),
-                    None,
-                    acc,
-                );
+                    sponge.start(
+                        IOPattern(vec![SpongeOp::Absorb(2), SpongeOp::Squeeze(1)]),
+                        None,
+                        acc,
+                    );
 
-                /*println!(
-                    "Hashing {:#?} {:#?}",
-                    next_hash.clone().get_value(),
-                    char_vars[i].clone().unwrap().get_value()
-                );*/
-                SpongeAPI::absorb(
-                    &mut sponge,
-                    2,
-                    &[
-                        Elt::Allocated(next_hash.clone()),
-                        Elt::Allocated(char_vars[i].clone().unwrap()),
-                    ], // TODO is
-                    // this
-                    // "connected"? get rid clones
-                    acc,
-                );
+                    /*println!(
+                        "Hashing {:#?} {:#?}",
+                        next_hash.clone().get_value(),
+                        char_vars[i].clone().unwrap().get_value()
+                    );*/
+                    SpongeAPI::absorb(
+                        &mut sponge,
+                        2,
+                        &[
+                            Elt::Allocated(next_hash.clone()),
+                            Elt::Allocated(char_vars[i].clone().unwrap()),
+                        ], // TODO is
+                        // this
+                        // "connected"? get rid clones
+                        acc,
+                    );
 
-                let output = SpongeAPI::squeeze(&mut sponge, 1, acc);
+                    let output = SpongeAPI::squeeze(&mut sponge, 1, acc);
 
-                sponge.finish(acc).unwrap();
+                    sponge.finish(acc).unwrap();
 
-                Elt::ensure_allocated(&output[0], &mut ns.namespace(|| "ensure allocated"), true)?
-            };
+                    Elt::ensure_allocated(
+                        &output[0],
+                        &mut ns.namespace(|| "ensure allocated"),
+                        true,
+                    )?
+                };
+            }
+
+            last_hash = Some(next_hash);
         }
-
         // this line for TESTING ONLY; evil peice of code that could fuck things up
         /*let next_hash = AllocatedNum::alloc(cs.namespace(|| "next_hash"), || {
             Ok(self.hashes.as_ref().unwrap()[self.batch_size])
@@ -654,6 +694,21 @@ where
         );
 
         // state, char, opt<hash>, opt<v,q for eval>, opt<v,q for doc>
-        Ok(vec![last_state.unwrap(), last_char, next_hash])
+        let mut out = vec![last_state.unwrap(), last_char];
+        if self.hashes.is_some() {
+            out.push(last_hash.unwrap());
+        }
+        if self.running_claims.is_some() {
+            for qv in rc_vars {
+                out.push(qv.unwrap());
+            }
+        }
+        if self.running_doc_claims.is_some() {
+            for qv in rc_doc_vars {
+                out.push(qv.unwrap());
+            }
+        }
+
+        Ok(out)
     }
 }
