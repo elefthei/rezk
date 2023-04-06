@@ -327,8 +327,8 @@ fn poly_eval_circuit(points: Vec<Integer>, x_lookup: Term) -> Term {
 
 pub struct R1CS<'a, F: PrimeField> {
     dfa: &'a NFA,
-    table: Vec<Integer>,
-    batching: JBatching,
+    pub table: Vec<Integer>,
+    pub eval_type: JBatching,
     pub commit_type: JCommit,
     assertions: Vec<Term>,
     // perhaps a misleading name, by "public inputs", we mean "circ leaves these wires exposed from
@@ -423,7 +423,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         Self {
             dfa,
             table,
-            batching, // TODO
+            eval_type: batching, // TODO
             commit_type: commit,
             assertions: Vec::new(),
             pub_inputs: Vec::new(),
@@ -607,7 +607,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
     }
 
     pub fn to_circuit(&mut self) -> (ProverData, VerifierData) {
-        match self.batching {
+        match self.eval_type {
             JBatching::NaivePolys => self.to_polys(),
             JBatching::Nlookup => self.to_nlookup(),
         }
@@ -897,7 +897,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         Option<Vec<Integer>>,
         Option<Integer>,
     ) {
-        match self.batching {
+        match self.eval_type {
             JBatching::NaivePolys => {
                 let (wits, next_state, next_doc_running_claim_q, next_doc_running_claim_v) = self
                     .gen_wit_i_polys(
@@ -1460,7 +1460,7 @@ mod tests {
                         } //JBatching::Plookup => todo!(),
                     } // TODO make batch size 1 work at some point, you know for nice figs
 
-                    println!("Batching {:#?}", r1cs_converter.batching);
+                    println!("Batching {:#?}", r1cs_converter.eval_type);
                     println!("Commit {:#?}", r1cs_converter.commit_type);
                     let (prover_data, _) = r1cs_converter.to_circuit();
 

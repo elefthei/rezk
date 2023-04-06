@@ -61,7 +61,7 @@ pub fn print_r1cs(pd: &ProverData) {
 */
 
 /// Convert a (rug) integer to a prime field element.
-fn int_to_ff<F: PrimeField>(i: Integer) -> F {
+pub fn int_to_ff<F: PrimeField>(i: Integer) -> F {
     let mut accumulator = F::from(0);
     let limb_bits = (std::mem::size_of::<limb_t>() as u64) << 3;
     let limb_base = F::from(2).pow_vartime([limb_bits]);
@@ -117,9 +117,10 @@ pub struct NFAStepCircuit<'a, F: PrimeField> {
     batch_size: usize,
     states: Vec<F>,
     chars: Vec<F>,
-    hashes: Vec<F>,
+    hashes: Option<Vec<F>>,
+    running_claims: Option<Vec<Vec<F>>>, // vec = [v, q0, q1, ...]
+    running_doc_claims: Option<Vec<Vec<F>>>,
     pc: PoseidonConstants<F, typenum::U2>,
-    nlookup: bool,
 }
 
 // note that this will generate a single round, and no witnesses, unlike nova example code
@@ -130,19 +131,28 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
         wits: Option<FxHashMap<String, Value>>, //Option<&'a FxHashMap<String, Value>>,
         states: Vec<F>,
         chars: Vec<F>,
-        hashes: Vec<F>,
+        hashes: Option<Vec<F>>,
+        running_claims: Option<Vec<Vec<F>>>, // vec = [v, q0, q1, ...]
+        running_doc_claims: Option<Vec<Vec<F>>>,
         batch_size: usize,
         pcs: PoseidonConstants<F, typenum::U2>,
-        nlookup: bool,
     ) -> Self {
         // todo check wits line up with the non det advice
 
         if wits.is_some() {
             assert_eq!(chars.len(), 2); // only need in/out for all of these
             assert_eq!(states.len(), 2);
-            assert_eq!(hashes.len(), 2);
-            //assert!(hashes.is_some() || nlookup); // no hashes -> nlookup
-            // we only use nlookup commit w/nlookup
+            if hashes.is_some() {
+                assert_eq!(hashes.unwrap().len(), 2);
+            }
+            if running_claims.is_some() {
+                assert_eq!(running_claims.unwrap().len(), 2);
+            }
+            if running_doc_claims.is_some() {
+                assert_eq!(running_doc_claims.unwrap().len(), 2);
+            }
+
+            assert!(hashes.is_some() ^ running_doc_claims.is_some());
         }
 
         let values: Option<Vec<_>> = wits.map(|values| {
@@ -165,8 +175,9 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
             states: states,
             chars: chars,
             hashes: hashes,
+            running_claims: running_claims,
+            running_doc_claims: running_doc_claims,
             pc: pcs,
-            nlookup: nlookup,
         }
     }
 }
@@ -176,7 +187,20 @@ where
     F: PrimeField,
 {
     fn arity(&self) -> usize {
-        3
+        // [state, char, opt<hash>, opt<v,q for eval claim>, opt<v,q for doc claim>]
+
+        let mut arity = 2;
+        if self.hashes.is_some() {
+            arity += 1;
+        }
+        if self.running_claims.is_some() {
+            arity += self.running_claims.unwrap()[0].len();
+        }
+        if self.running_doc_claims.is_some() {
+            arity += self.running_doc_claims.unwrap()[0].len();
+        }
+
+        arity
     }
 
     // z = [state, char, hash, round_num, bool_out]
@@ -185,17 +209,38 @@ where
         assert_eq!(z[0], self.states[0]); // "current state"
         assert_eq!(z[1], self.chars[0]);
 
-        //let mut next_hash = F::from(0);
-        //if self.hashes.is_some() {
-        assert_eq!(z[2], self.hashes[0]);
-        //    next_hash = self.hashes.as_ref().unwrap()[self.batch_size];
-        //}
+        let mut i = 2;
+        if self.hashes.is_some() {
+            assert_eq!(z[i], self.hashes.unwrap()[0]);
+            i += 1;
+        }
+        if self.running_claims.is_some() {
+            for qv in self.running_claims.unwrap()[0] {
+                assert_eq!(z[i], qv);
+                i += 1;
+            }
+        }
+        if self.running_doc_claims.is_some() {
+            for qv in self.running_doc_claims.unwrap()[0] {
+                assert_eq!(z[i], qv);
+                i += 1;
+            }
+        }
 
-        vec![
+        let mut out = vec![
             self.states[1], // "next state"
             self.chars[1],
-            self.hashes[1], //next_hash,
-        ]
+        ];
+        if self.hashes.is_some() {
+            out.push(self.hashes.unwrap()[1].clone());
+        }
+        if self.running_claims.is_some() {
+            out.append(&mut self.running_claims.unwrap()[1].clone());
+        }
+        if self.running_doc_claims.is_some() {
+            out.append(&mut self.running_doc_claims.unwrap()[1].clone());
+        }
+        out
     }
 
     fn get_counter_type(&self) -> StepCounterType {
@@ -216,7 +261,7 @@ where
         // inputs
         let state_0 = z[0].clone();
         let char_0 = z[1].clone();
-        let hash_0 = z[2].clone();
+        //let hash_0 = z[2].clone();
 
         //println!("current_state: {:#?}", current_state.get_value());
         //println!("current_char: {:#?}", current_char.get_value());
@@ -232,6 +277,9 @@ where
         //println!("BATCH SIZE IN NOVA {:#?}", self.batch_size);
         // intms
         let mut char_vars = vec![None; self.batch_size];
+
+        let mut next_eval_claim = vec![None; self.running_claim.unwrap()[0].len()];
+        let mut next_doc_claim = vec![None; self.running_doc_claims.unwrap()[0].len()];
 
         // convert
         let f_mod = get_modulus::<F>(); // TODO
@@ -605,6 +653,7 @@ where
             self.r1cs.constraints.len()
         );
 
+        // state, char, opt<hash>, opt<v,q for eval>, opt<v,q for doc>
         Ok(vec![last_state.unwrap(), last_char, next_hash])
     }
 }

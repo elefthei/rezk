@@ -3,8 +3,7 @@ type G2 = pasta_curves::vesta::Point;
 use crate::backend::costs::{JBatching, JCommit};
 use crate::backend::{nova::*, r1cs::*};
 use crate::dfa::NFA;
-use circ::cfg;
-use circ::cfg::CircOpt;
+use circ::cfg::{cfg, CircOpt};
 use circ::target::r1cs::ProverData;
 use ff::{Field, PrimeField};
 use generic_array::typenum;
@@ -27,7 +26,11 @@ use nova_snark::{
     CompressedSNARK, PublicParams, RecursiveSNARK, StepCounterType, FINAL_EXTERNAL_COUNTER,
 };
 use rand::rngs::OsRng;
-use rug::{integer::Order, Integer};
+use rug::{
+    integer::Order,
+    ops::{RemRounding, RemRoundingAssign},
+    Assign, Integer,
+};
 use std::time::{Duration, Instant};
 
 pub enum ReefCommitment {
@@ -76,14 +79,12 @@ pub fn gen_commitment(
         JCommit::Nlookup => {
             let gens_t = CommitmentGens::<G1>::new(b"nlookup document commitment", doc.len()); // n is dimension
             let blind = <G1 as Group>::Scalar::random(&mut OsRng);
-            let mut scalars = vec![]; // doc determined at runtime, not compile time
-            let mut i = 0;
-            for c in doc.into_iter() {
-                // this actually needs to be the MLE coeffs :( TODO
-                //clone().into_iter() {
-                scalars.push(<G1 as Group>::Scalar::from(c as u64));
-                i += 1;
-            }
+
+            let mle = mle_from_pts(doc.into_iter().map(|x| Integer::from(x)).collect()); // potentially rev q?
+
+            let scalars: Vec<<G1 as Group>::Scalar> =
+                mle.into_iter().map(|x| int_to_ff(x)).collect();
+
             let commit_t =
                 <G1 as Group>::CE::commit(&gens_t, &scalars.clone().into_boxed_slice(), &blind);
             // TODO compress ?
@@ -134,9 +135,9 @@ pub fn final_clear_checks(
     reef_commitment: ReefCommitment,
     accepting_state: <G1 as Group>::Scalar,
     table: &Vec<Integer>,
-    final_hash: Option<<G1 as Group>::Scalar>,
     final_q: Option<Vec<<G1 as Group>::Scalar>>,
     final_v: Option<<G1 as Group>::Scalar>,
+    final_hash: Option<<G1 as Group>::Scalar>,
     final_doc_q: Option<Vec<<G1 as Group>::Scalar>>,
     final_doc_v: Option<<G1 as Group>::Scalar>,
 ) {
@@ -257,7 +258,6 @@ pub fn run_backend(
         vec![<G1 as Group>::Scalar::from(0); 2],
         r1cs_converter.batch_size,
         sc.clone(),
-        false,
     );
 
     // trivial circuit
@@ -407,7 +407,6 @@ pub fn run_backend(
             ],
             r1cs_converter.batch_size,
             sc.clone(),
-            false,
         );
         // trivial circuit
         let circuit_secondary = TrivialTestCircuit::new(StepCounterType::External);
@@ -467,9 +466,89 @@ pub fn run_backend(
     let nova_verifier_ms = n_time.elapsed().as_millis();
 
     println!("nova verifier ms {:#?}", nova_verifier_ms);
+
+    // final "in the clear" V checks
+    let zn = res.unwrap().0;
+
+    // eval type, reef commitment, accepting state bool, table, final_q, final_v, final_hash
+    // final_doc_q, final_doc_v
+    match (r1cs_converter.eval_type, r1cs_converter.commit_type) {
+        (JBatching::NaivePolys, JCommit::HashChain) => {
+            final_clear_checks(
+                r1cs_converter.eval_type,
+                reef_commit,
+                zn[0],
+                &r1cs_converter.table,
+                None,
+                None,
+                Some(zn[0]),
+                None,
+                None,
+            );
+        }
+        (JBatching::NaivePolys, JCommit::Nlookup) => {
+            final_clear_checks(
+                r1cs_converter.eval_type,
+                reef_commit,
+                zn[0],
+                &r1cs_converter.table,
+                None,
+                None,
+                None,
+                Some(zn[0..3].to_vec()),
+                Some(zn[0]),
+            );
+        }
+        (JBatching::Nlookup, JCommit::HashChain) => {
+            final_clear_checks(
+                r1cs_converter.eval_type,
+                reef_commit,
+                zn[0],
+                &r1cs_converter.table,
+                Some(zn[0..3].to_vec()),
+                Some(zn[0]),
+                Some(zn[0]),
+                None,
+                None,
+            );
+        }
+        (JBatching::Nlookup, JCommit::Nlookup) => {
+            final_clear_checks(
+                r1cs_converter.eval_type,
+                reef_commit,
+                zn[0],
+                &r1cs_converter.table,
+                Some(zn[0..3].to_vec()),
+                Some(zn[0]),
+                None,
+                Some(zn[0..3].to_vec()),
+                Some(zn[0]),
+            );
+        }
+    }
 }
 
-// tests that need setup
+// TODO test, TODO over ff, not Integers
+// calculate multilinear extension from evals of univariate
+fn mle_from_pts(pts: Vec<Integer>) -> Vec<Integer> {
+    let num_pts = pts.len();
+    if num_pts == 1 {
+        return vec![pts[0].clone()];
+    }
+
+    let h = num_pts / 2;
+    //println!("num_pts {}, h {}", num_pts, h);
+
+    let mut l = mle_from_pts(pts[..h].to_vec());
+    let mut r = mle_from_pts(pts[h..].to_vec());
+
+    for i in 0..r.len() {
+        r[i] -= &l[i];
+        l.push(r[i].clone().rem_floor(cfg().field().modulus()));
+    }
+
+    l
+}
 
 #[cfg(test)]
 mod tests {
@@ -548,7 +627,7 @@ mod tests {
     fn e2e_nl_nl() {
         backend_test(
             "ab".to_string(),
-            "a*b*".to_string(),
+            "^a*b*$".to_string(),
             "aaabbb".to_string(),
             JBatching::Nlookup,
             JCommit::Nlookup,
