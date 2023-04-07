@@ -32,33 +32,6 @@ use std::hash::BuildHasherDefault;
 fn type_of<T>(_: &T) {
     println!("{}", std::any::type_name::<T>())
 }
-/*
-fn string_lc(pd: &ProverData, lc: &Lc) -> String {
-    let mut s = vec![];
-    if !lc.is_zero() {
-        s.push(format!("{:#?}", lc.constant.i()));
-        for (idx, coef) in &lc.monomials {
-            s.push(format!(
-                "({:#?} * {:#?})",
-                coef.i(),
-                pd.r1cs.idxs_signals.get(&idx).unwrap()
-            ));
-        }
-    }
-    s.join(" + ")
-}
-
-pub fn print_r1cs(pd: &ProverData) {
-    for (a, b, c) in pd.r1cs.constraints() {
-        println!(
-            "[ {:#?} * {:#?} = {:#?} ]",
-            string_lc(pd, a),
-            string_lc(pd, b),
-            string_lc(pd, c)
-        );
-    }
-}
-*/
 
 /// Convert a (rug) integer to a prime field element.
 pub fn int_to_ff<F: PrimeField>(i: Integer) -> F {
@@ -109,18 +82,28 @@ fn get_modulus<F: Field + PrimeField>() -> Integer {
 }
 
 #[derive(Clone, Debug)]
+pub enum GlueOpts<F: PrimeField> {
+    Poly_Hash(F),                  // hash
+    Nl_Hash((F, Vec<F>, F)),       // hash, q, v
+    Poly_Nl((Vec<F>, F)),          // doc_q, doc_v
+    Nl_Nl((Vec<F>, F, Vec<F>, F)), // q, v, doc_q, doc_v
+}
+
+#[derive(Clone)]
 pub struct NFAStepCircuit<'a, F: PrimeField> {
     r1cs: &'a R1csFinal, // TODO later ref
     values: Option<Vec<Value>>,
+    vars: HashMap<Var, Variable>,
     //prover_data: &'a ProverData,
     //wits: Option<'a FxHashMap<String, Value>>,
     batch_size: usize,
     states: Vec<F>,
     chars: Vec<F>,
-    hashes: Option<Vec<F>>,
-    running_claims: Option<Vec<Vec<F>>>, // vec = [q0, q1, ..., v]
-    running_doc_claims: Option<Vec<Vec<F>>>,
+    glue: Vec<GlueOpts<F>>,
     pc: PoseidonConstants<F, typenum::U2>,
+    alloc_chars: Vec<Option<AllocatedNum<F>>>,
+    alloc_rc: Vec<Option<AllocatedNum<F>>>,
+    alloc_doc_rc: Vec<Option<AllocatedNum<F>>>,
 }
 
 // note that this will generate a single round, and no witnesses, unlike nova example code
@@ -131,28 +114,24 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
         wits: Option<FxHashMap<String, Value>>, //Option<&'a FxHashMap<String, Value>>,
         states: Vec<F>,
         chars: Vec<F>,
-        hashes: Option<Vec<F>>,
-        running_claims: Option<Vec<Vec<F>>>, // vec = [q0, q1, ..., v]
-        running_doc_claims: Option<Vec<Vec<F>>>,
+        glue: Vec<GlueOpts<F>>,
         batch_size: usize,
         pcs: PoseidonConstants<F, typenum::U2>,
     ) -> Self {
         // todo check wits line up with the non det advice
 
-        if wits.is_some() {
-            assert_eq!(chars.len(), 2); // only need in/out for all of these
-            assert_eq!(states.len(), 2);
-            if hashes.is_some() {
-                assert_eq!(hashes.unwrap().len(), 2);
-            }
-            if running_claims.is_some() {
-                assert_eq!(running_claims.unwrap().len(), 2);
-            }
-            if running_doc_claims.is_some() {
-                assert_eq!(running_doc_claims.unwrap().len(), 2);
-            }
+        assert_eq!(chars.len(), 2); // only need in/out for all of these
+        assert_eq!(states.len(), 2);
+        assert_eq!(glue.len(), 2);
 
-            assert!(hashes.is_some() ^ running_doc_claims.is_some());
+        match (glue[0], glue[1]) {
+            (GlueOpts::Poly_Hash(_), GlueOpts::Poly_Hash(_)) => {}
+            (GlueOpts::Nl_Hash(_), GlueOpts::Nl_Hash(_)) => {}
+            (GlueOpts::Poly_Nl(_), GlueOpts::Poly_Nl(_)) => (),
+            (GlueOpts::Nl_Nl(_), GlueOpts::Nl_Nl(_)) => {}
+            (_, _) => {
+                panic!("glue I/O does not match");
+            }
         }
 
         let values: Option<Vec<_>> = wits.map(|values| {
@@ -168,17 +147,210 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
             ffs
         });
 
+        let mut vars = HashMap::with_capacity(prover_data.r1cs.vars.len());
+        let mut alloc_chars = vec![None; batch_size];
+        let mut rc_vars = vec![];
+        let mut rc_doc_vars = vec![];
+
         NFAStepCircuit {
             r1cs: &prover_data.r1cs, // def get rid of this crap
             values: values,
+            vars: vars,
             batch_size: batch_size,
             states: states,
             chars: chars,
-            hashes: hashes,
-            running_claims: running_claims,
-            running_doc_claims: running_doc_claims,
+            glue: glue,
             pc: pcs,
+            alloc_chars: alloc_chars,
+            alloc_rc: rc_vars,
+            alloc_doc_rc: rc_doc_vars,
         }
+    }
+
+    fn generate_variable_info(
+        &self,
+        var: Var,
+        i: usize,
+    ) -> (String, Result<F, SynthesisError>, String) {
+        assert!(
+            !matches!(var.ty(), VarType::CWit),
+            "Nova doesn't support committed witnesses"
+        );
+        assert!(
+            !matches!(var.ty(), VarType::RoundWit | VarType::Chall),
+            "Nova doesn't support rounds"
+        );
+        let public = matches!(var.ty(), VarType::Inst); // but we really dont care
+        let name_f = format!("{var:?}");
+
+        let val_f = {
+            Ok({
+                let i_val = &self.values.as_ref().expect("missing values")[i];
+                let ff_val = int_to_ff(i_val.as_pf().into());
+                //debug!("value : {var:?} -> {ff_val:?} ({i_val})");
+                ff_val
+            })
+        };
+        let s = self.r1cs.names[&var].clone();
+
+        (name_f, val_f, s)
+    }
+
+    fn default_variable_parsing<CS>(
+        &self,
+        cs: &mut CS,
+        s: String,
+        var: Var,
+        name_f: String,
+        val_f: Result<F, SynthesisError>,
+        state_0: AllocatedNum<F>,
+        char_0: AllocatedNum<F>,
+    ) -> Result<Option<AllocatedNum<F>>, SynthesisError>
+    where
+        CS: ConstraintSystem<F>,
+    {
+        if s.starts_with("char_0") {
+            self.vars.insert(var, char_0.get_variable());
+        } else if s.starts_with("state_0") {
+            let alloc_v = state_0.clone(); //AllocatedNum::alloc(cs.namespace(name_f), val_f)?;
+                                           //assert_eq!(val_f, current_state); //current_state = alloc_v.get_variable();
+            self.vars.insert(var, alloc_v.get_variable());
+
+        // outputs
+        } else if s.starts_with(&format!("state_{}", self.batch_size)) {
+            let alloc_v = AllocatedNum::alloc(cs.namespace(|| name_f), || val_f)?;
+            let last_state = Some(alloc_v); //.get_variable(); // TODO can we create binding here?
+                                            //-- TODO must return last state
+            self.vars
+                .insert(var, last_state.clone().unwrap().get_variable());
+
+            return Ok(last_state);
+        } else {
+            let alloc_v = AllocatedNum::alloc(cs.namespace(|| name_f), || val_f)?;
+            self.vars.insert(var, alloc_v.get_variable());
+        }
+        return Ok(None);
+    }
+
+    fn hash_parsing<CS>(
+        &self,
+        cs: &mut CS,
+        s: String,
+        var: Var,
+        name_f: String,
+        val_f: Result<F, SynthesisError>,
+    ) -> Result<bool, SynthesisError>
+    where
+        CS: ConstraintSystem<F>,
+    {
+        // intermediate (in circ) wits
+        if s.starts_with("char_") {
+            let alloc_v = AllocatedNum::alloc(cs.namespace(|| name_f), || val_f)?;
+            let char_j = Some(alloc_v); //.get_variable();
+            self.vars
+                .insert(var, char_j.clone().unwrap().get_variable()); // messy TODO
+
+            //let j = s.chars().nth(5).unwrap().to_digit(10).unwrap() as usize;
+            let s_sub: Vec<&str> = s.split("_").collect();
+            let j: usize = s_sub[1].parse().unwrap();
+
+            if j < self.batch_size {
+                self.alloc_chars[j] = char_j;
+            } // don't add the last one
+
+            return Ok(true);
+        }
+
+        return Ok(false);
+    }
+
+    fn hash_circuit<CS>(
+        &self,
+        cs: &mut CS,
+        start_hash: AllocatedNum<F>,
+    ) -> Result<AllocatedNum<F>, SynthesisError>
+    where
+        CS: ConstraintSystem<F>,
+    {
+        println!("adding hash chain hashes in nova");
+        let mut next_hash = start_hash;
+
+        for i in 0..(self.batch_size) {
+            let mut ns = cs.namespace(|| format!("poseidon hash ns batch {}", i));
+            //println!("i {:#?}", i);
+            next_hash = {
+                let mut sponge = SpongeCircuit::new_with_constants(&self.pc, Mode::Simplex);
+                let acc = &mut ns;
+
+                sponge.start(
+                    IOPattern(vec![SpongeOp::Absorb(2), SpongeOp::Squeeze(1)]),
+                    None,
+                    acc,
+                );
+
+                /*println!(
+                    "Hashing {:#?} {:#?}",
+                    next_hash.clone().get_value(),
+                    char_vars[i].clone().unwrap().get_value()
+                );*/
+                SpongeAPI::absorb(
+                    &mut sponge,
+                    2,
+                    &[
+                        Elt::Allocated(next_hash.clone()),
+                        Elt::Allocated(self.alloc_chars[i].clone().unwrap()),
+                    ],
+                    // TODO "connected"? get rid clones
+                    acc,
+                );
+
+                let output = SpongeAPI::squeeze(&mut sponge, 1, acc);
+
+                sponge.finish(acc).unwrap();
+
+                Elt::ensure_allocated(&output[0], &mut ns.namespace(|| "ensure allocated"), true)?
+            };
+        }
+
+        return Ok(next_hash); //last hash
+    }
+
+    fn nl_eval_parsing<CS>(
+        &self,
+        cs: &mut CS,
+        s: String,
+        var: Var,
+        name_f: String,
+        val_f: Result<F, SynthesisError>,
+        sc_l: usize,
+    ) -> Result<bool, SynthesisError>
+    where
+        CS: ConstraintSystem<F>,
+    {
+        if s.starts_with("nl_prev_running_claim") {
+            // v
+            let alloc_v = AllocatedNum::alloc(cs.namespace(|| name_f), || val_f)?;
+
+            self.alloc_rc[sc_l - 1] = Some(alloc_v);
+            self.vars
+                .insert(var, self.alloc_rc[sc_l - 1].clone().unwrap().get_variable());
+
+            return Ok(true);
+        } else if s.starts_with(&format!("nl_eq_{}", self.batch_size)) {
+            // nl_eq_<NUM>_q_<NUM>
+            // q
+            let s_sub: Vec<&str> = s.split("_").collect();
+            let q: usize = s_sub[4].parse().unwrap();
+
+            let alloc_v = AllocatedNum::alloc(cs.namespace(|| name_f), || val_f)?;
+
+            self.alloc_rc[q] = Some(alloc_v);
+            self.vars
+                .insert(var, self.alloc_rc[q].clone().unwrap().get_variable());
+
+            return Ok(true);
+        }
+        return Ok(false);
     }
 }
 
@@ -190,14 +362,15 @@ where
         // [state, char, opt<hash>, opt<v,q for eval claim>, opt<v,q for doc claim>]
 
         let mut arity = 2;
-        if self.hashes.is_some() {
-            arity += 1;
-        }
-        if self.running_claims.is_some() {
-            arity += self.running_claims.unwrap()[0].len();
-        }
-        if self.running_doc_claims.is_some() {
-            arity += self.running_doc_claims.unwrap()[0].len();
+        match self.glue[0] {
+            GlueOpts::Poly_Hash(_) => {
+                arity += 1;
+            }
+            GlueOpts::Nl_Hash((_, q, _)) => arity += q.len() + 1 + 1, // q, v, hashes
+            GlueOpts::Poly_Nl((dq, _)) => arity += dq.len() + 1,      // doc_q, doc_v
+            GlueOpts::Nl_Nl((q, _, dq, _)) => {
+                arity += q.len() + 1 + dq.len() + 1;
+            }
         }
 
         arity
@@ -209,37 +382,69 @@ where
         assert_eq!(z[0], self.states[0]); // "current state"
         assert_eq!(z[1], self.chars[0]);
 
-        let mut i = 2;
-        if self.hashes.is_some() {
-            assert_eq!(z[i], self.hashes.unwrap()[0]);
-            i += 1;
-        }
-        if self.running_claims.is_some() {
-            for qv in self.running_claims.unwrap()[0] {
-                assert_eq!(z[i], qv);
-                i += 1;
+        match self.glue[0] {
+            GlueOpts::Poly_Hash(h) => {
+                assert_eq!(z[2], h);
             }
-        }
-        if self.running_doc_claims.is_some() {
-            for qv in self.running_doc_claims.unwrap()[0] {
-                assert_eq!(z[i], qv);
+            GlueOpts::Nl_Hash((h, q, v)) => {
+                assert_eq!(z[2], h);
+                let mut i = 3;
+                for qi in q {
+                    assert_eq!(z[i], qi);
+                    i += 1;
+                }
+                assert_eq!(z[i], v);
+            }
+            GlueOpts::Poly_Nl((dq, dv)) => {
+                let mut i = 2;
+                for qi in dq {
+                    assert_eq!(z[i], qi);
+                    i += 1;
+                }
+                assert_eq!(z[i], dv);
+            }
+            GlueOpts::Nl_Nl((q, v, dq, dv)) => {
+                let mut i = 2;
+                for qi in q {
+                    assert_eq!(z[i], qi);
+                    i += 1;
+                }
+                assert_eq!(z[i], v);
                 i += 1;
+                for qi in dq {
+                    assert_eq!(z[i], qi);
+                    i += 1;
+                }
+                assert_eq!(z[i], dv);
             }
         }
 
+        // calc out
         let mut out = vec![
             self.states[1], // "next state"
             self.chars[1],
         ];
-        if self.hashes.is_some() {
-            out.push(self.hashes.unwrap()[1].clone());
+        match self.glue[1] {
+            GlueOpts::Poly_Hash(h) => {
+                out.push(h);
+            }
+            GlueOpts::Nl_Hash((h, q, v)) => {
+                out.push(h);
+                out.extend(&q);
+                out.push(v);
+            }
+            GlueOpts::Poly_Nl((dq, dv)) => {
+                out.extend(&dq);
+                out.push(dv);
+            }
+            GlueOpts::Nl_Nl((q, v, dq, dv)) => {
+                out.extend(q);
+                out.push(v);
+                out.extend(&dq);
+                out.push(dv);
+            }
         }
-        if self.running_claims.is_some() {
-            out.append(&mut self.running_claims.unwrap()[1].clone());
-        }
-        if self.running_doc_claims.is_some() {
-            out.append(&mut self.running_doc_claims.unwrap()[1].clone());
-        }
+
         out
     }
 
@@ -261,24 +466,13 @@ where
         // inputs
         let state_0 = z[0].clone();
         let char_0 = z[1].clone();
-
-        //println!("current_state: {:#?}", current_state.get_value());
-        //println!("current_char: {:#?}", current_char.get_value());
-        //println!("prev_hash: {:#?}", prev_hash.get_value());
+        self.alloc_chars[0] = Some(char_0);
 
         // ouputs
         let mut last_state = None;
-        let mut last_hash = None;
 
         // for nova passing (new inputs from prover, not provided by circ prover, so to speak)
         let last_char = AllocatedNum::alloc(cs.namespace(|| "last_char"), || Ok(self.chars[1]))?;
-
-        //println!("BATCH SIZE IN NOVA {:#?}", self.batch_size);
-        // intms
-        let mut char_vars = vec![None; self.batch_size];
-
-        let mut rc_vars = vec![None; self.running_claims.unwrap()[0].len()];
-        let mut rc_doc_vars = vec![None; self.running_doc_claims.unwrap()[0].len()];
 
         // convert
         let f_mod = get_modulus::<F>(); // TODO
@@ -291,71 +485,153 @@ where
             f_mod
         );
 
-        let mut vars = HashMap::with_capacity(self.r1cs.vars.len());
+        let mut last_state = None;
+        let mut out = vec![];
 
-        for (i, var) in self.r1cs.vars.iter().copied().enumerate() {
-            assert!(
-                !matches!(var.ty(), VarType::CWit),
-                "Bellman doesn't support committed witnesses"
+        match self.glue[0] {
+            GlueOpts::Poly_Hash(h) => {
+                for (i, var) in self.r1cs.vars.iter().copied().enumerate() {
+                    let (name_f, val_f, s) = self.generate_variable_info(var, i);
+
+                    let matched = self.hash_parsing(cs, s, var, name_f, val_f).unwrap();
+
+                    if !matched {
+                        match self.default_variable_parsing(
+                            &mut cs, s, var, name_f, val_f, state_0, char_0,
+                        ) {
+                            Ok(None) => {}
+                            Ok(Some(s)) => {
+                                last_state = Some(s);
+                            }
+                        };
+                    }
+                }
+                out.push(last_state.unwrap());
+                out.push(last_char);
+                let last_hash = self.hash_circuit(&mut cs, z[2].clone());
+                out.push(last_hash.unwrap());
+            }
+            GlueOpts::Nl_Hash((h, q, v)) => {
+                // can prob use these vals to sanity check
+                let sc_l = q.len();
+                self.alloc_rc = vec![None; sc_l + 1];
+
+                for (i, var) in self.r1cs.vars.iter().copied().enumerate() {
+                    let (name_f, val_f, s) = self.generate_variable_info(var, i);
+
+                    let mut matched = self.hash_parsing(cs, s, var, name_f, val_f).unwrap();
+                    if !matched {
+                        matched = self
+                            .nl_eval_parsing(cs, s, var, name_f, val_f, sc_l)
+                            .unwrap();
+                        if !matched {
+                            match self.default_variable_parsing(
+                                &mut cs, s, var, name_f, val_f, state_0, char_0,
+                            ) {
+                                Ok(None) => {}
+                                Ok(Some(s)) => {
+                                    last_state = Some(s);
+                                }
+                            };
+                        }
+                    }
+                }
+                out.push(last_state.unwrap());
+                out.push(last_char);
+                let last_hash = self.hash_circuit(&mut cs, z[2].clone());
+                out.push(last_hash.unwrap());
+            }
+            GlueOpts::Poly_Nl((dq, dv)) => {
+                let doc_l = dq.len();
+                self.alloc_doc_rc = vec![None; doc_l + 1];
+
+                for (i, var) in self.r1cs.vars.iter().copied().enumerate() {
+                    let (name_f, val_f, s) = self.generate_variable_info(var, i);
+
+                    let matched = self.nl_doc_parsing();
+                    if !matched {
+                        match self.default_variable_parsing(
+                            &mut cs, s, var, name_f, val_f, state_0, char_0,
+                        ) {
+                            Ok(None) => {}
+                            Ok(Some(s)) => {
+                                last_state = Some(s);
+                            }
+                        };
+                    }
+                }
+                out.push(last_state.unwrap());
+                out.push(last_char);
+            }
+            GlueOpts::Nl_Nl((q, v, dq, dv)) => {
+                let sc_l = q.len();
+                self.alloc_rc = vec![None; sc_l + 1];
+
+                let doc_l = dq.len();
+                self.alloc_doc_rc = vec![None; doc_l + 1];
+
+                for (i, var) in self.r1cs.vars.iter().copied().enumerate() {
+                    let (name_f, val_f, s) = self.generate_variable_info(var, i);
+
+                    let mut matched = self
+                        .nl_eval_parsing(cs, s, var, name_f, val_f, sc_l)
+                        .unwrap();
+                    if !matched {
+                        matched = self.nl_doc_parsing();
+                        if !matched {
+                            match self.default_variable_parsing(
+                                &mut cs, s, var, name_f, val_f, state_0, char_0,
+                            ) {
+                                Ok(None) => {}
+                                Ok(Some(s)) => {
+                                    last_state = Some(s);
+                                }
+                            }
+                        }
+                    }
+                }
+                out.push(last_state.unwrap());
+                out.push(last_char);
+            }
+        }
+        for (i, (a, b, c)) in self.r1cs.constraints.iter().enumerate() {
+            cs.enforce(
+                || format!("con{}", i),
+                |z| lc_to_bellman::<F, CS>(&self.vars, a, z),
+                |z| lc_to_bellman::<F, CS>(&self.vars, b, z),
+                |z| lc_to_bellman::<F, CS>(&self.vars, c, z),
             );
-            assert!(
-                !matches!(var.ty(), VarType::RoundWit | VarType::Chall),
-                "Bellman doesn't support rounds"
-            );
-            let public = matches!(var.ty(), VarType::Inst); // but we really dont care
-            let name_f = || format!("{var:?}");
+        }
+        println!(
+            "done with synth: {} vars {} cs",
+            self.vars.len(),
+            self.r1cs.constraints.len()
+        );
 
-            let val_f = || {
-                Ok({
-                    let i_val = &self.values.as_ref().expect("missing values")[i];
-                    let ff_val = int_to_ff(i_val.as_pf().into());
-                    //debug!("value : {var:?} -> {ff_val:?} ({i_val})");
-                    ff_val
-                })
-            };
-            //println!("Var (name?) {:#?}", self.r1cs.names[&var]);
-            let s = self.r1cs.names[&var].clone();
-            /*let v = cs.alloc(name_f, val_f)?
-                vars.insert(var, v);
-            */
+        self.vars = HashMap::with_capacity(self.r1cs.vars.len());
+        // state, char, opt<hash>, opt<v,q for eval>, opt<v,q for doc>
 
-            if s.starts_with("char_0") {
-                let alloc_v = char_0.clone(); //AllocatedNum::alloc(cs.namespace(name_f), val_f)?;
-                                              //assert_eq!(ff_val, current_char.get_value().unwrap()); //current_char = Some(alloc_v); //.get_variable();
-                vars.insert(var, alloc_v.get_variable());
-                char_vars[0] = Some(alloc_v);
-            } else if s.starts_with("state_0") {
-                let alloc_v = state_0.clone(); //AllocatedNum::alloc(cs.namespace(name_f), val_f)?;
-                                               //assert_eq!(val_f, current_state); //current_state = alloc_v.get_variable();
-                vars.insert(var, alloc_v.get_variable());
+        Ok(out)
+    }
+}
+/////////////
+////
 
-            // outputs
-            } else if s.starts_with(&format!("state_{}", self.batch_size)) {
-                let alloc_v = AllocatedNum::alloc(cs.namespace(name_f), val_f)?;
-                last_state = Some(alloc_v); //.get_variable();
-                vars.insert(var, last_state.clone().unwrap().get_variable());
-            } else if s.starts_with("nl_prev_running_claim") {
-                // v
-                let alloc_v = AllocatedNum::alloc(cs.namespace(name_f), val_f)?;
+/*
 
-                rc_vars[rc_vars.len() - 1] = Some(alloc_v);
-                vars.insert(var, alloc_v.get_variable());
-            } else if s.starts_with(&format!("nl_eq_{}", self.batch_size)) {
-                // nl_eq_<NUM>_q_<NUM>
-                // q
-                let s_sub: Vec<&str> = s.split("_").collect();
-                let q: usize = s_sub[4].parse().unwrap();
 
-                let alloc_v = AllocatedNum::alloc(cs.namespace(name_f), val_f)?;
-
-                rc_vars[q] = Some(alloc_v);
-                vars.insert(var, alloc_v.get_variable());
             } else if s.starts_with("nl_doc_prev_running_claim") {
                 // doc v
                 let alloc_v = AllocatedNum::alloc(cs.namespace(name_f), val_f)?;
 
                 rc_doc_vars[rc_vars.len() - 1] = Some(alloc_v);
-                vars.insert(var, alloc_v.get_variable());
+                vars.insert(
+                    var,
+                    rc_doc_vars[rc_vars.len() - 1]
+                        .clone()
+                        .unwrap()
+                        .get_variable(),
+                );
             } else if s.starts_with(&format!("nl_doc_eq_{}", self.batch_size)) {
                 // nl_eq_<NUM>_q_<NUM>
                 // q
@@ -365,7 +641,7 @@ where
                 let alloc_v = AllocatedNum::alloc(cs.namespace(name_f), val_f)?;
 
                 rc_vars[q] = Some(alloc_v);
-                vars.insert(var, alloc_v.get_variable());
+                vars.insert(var, rc_vars[q].clone().unwrap().get_variable());
 
             // sumcheck hashes
             } else if s.starts_with("nl_claim_r") {
@@ -580,104 +856,11 @@ where
                     |z| z + new_pos.get_variable(),
                 );
 
-            // intermediate (in circ) wits
-            } else if s.starts_with("char_") {
-                // for hash commits
-                // hash commit wits (TODO if)
-                let alloc_v = AllocatedNum::alloc(cs.namespace(name_f), val_f)?;
-                let char_j = Some(alloc_v); //.get_variable();
-                vars.insert(var, char_j.clone().unwrap().get_variable()); // messy TODO
 
-                //let j = s.chars().nth(5).unwrap().to_digit(10).unwrap() as usize;
-                let s_sub: Vec<&str> = s.split("_").collect();
-                let j: usize = s_sub[1].parse().unwrap();
 
-                if j < self.batch_size {
-                    char_vars[j] = char_j;
-                } // don't add the last one
-            } else {
-                let alloc_v = AllocatedNum::alloc(cs.namespace(name_f), val_f)?;
-                let v = alloc_v.get_variable();
-                //vars.insert(i, v);
-
-                //let v = cs.alloc(name_f, val_f)?
-                vars.insert(var, v);
-            }
-        }
-        for (i, (a, b, c)) in self.r1cs.constraints.iter().enumerate() {
-            cs.enforce(
-                || format!("con{}", i),
-                |z| lc_to_bellman::<F, CS>(&vars, a, z),
-                |z| lc_to_bellman::<F, CS>(&vars, b, z),
-                |z| lc_to_bellman::<F, CS>(&vars, c, z),
-            );
-        }
-        /*
-                    //        let z = LinearCombination::zero();
-                    println!(
-                        "i= {:#?}, a= {:#?}, b= {:#?}, c= {:#?}",
-                        i,
-                        a,
-                        //            lc_to_bellman::<F, CS>(&vars, a, z.clone()),
-                        b,
-                        //             lc_to_bellman::<F, CS>(&vars, b, z.clone()),
-                        c,
-                        //              lc_to_bellman::<F, CS>(&vars, c, z.clone()),
-                    );
-                }
-        */
         // https://github.com/zkcrypto/bellman/blob/2759d930622a7f18b83a905c9f054d52a0bbe748/src/gadgets/num.rs,
         // line 31 ish
 
-        // hash commit
-        if self.hashes.is_some() {
-            println!("adding hash chain hashes in nova");
-            let mut next_hash = z[2].clone();
-
-            for i in 0..(self.batch_size) {
-                let mut ns = cs.namespace(|| format!("poseidon hash ns batch {}", i));
-                //println!("i {:#?}", i);
-                next_hash = {
-                    let mut sponge = SpongeCircuit::new_with_constants(&self.pc, Mode::Simplex);
-                    let acc = &mut ns;
-
-                    sponge.start(
-                        IOPattern(vec![SpongeOp::Absorb(2), SpongeOp::Squeeze(1)]),
-                        None,
-                        acc,
-                    );
-
-                    /*println!(
-                        "Hashing {:#?} {:#?}",
-                        next_hash.clone().get_value(),
-                        char_vars[i].clone().unwrap().get_value()
-                    );*/
-                    SpongeAPI::absorb(
-                        &mut sponge,
-                        2,
-                        &[
-                            Elt::Allocated(next_hash.clone()),
-                            Elt::Allocated(char_vars[i].clone().unwrap()),
-                        ], // TODO is
-                        // this
-                        // "connected"? get rid clones
-                        acc,
-                    );
-
-                    let output = SpongeAPI::squeeze(&mut sponge, 1, acc);
-
-                    sponge.finish(acc).unwrap();
-
-                    Elt::ensure_allocated(
-                        &output[0],
-                        &mut ns.namespace(|| "ensure allocated"),
-                        true,
-                    )?
-                };
-            }
-
-            last_hash = Some(next_hash);
-        }
         // this line for TESTING ONLY; evil peice of code that could fuck things up
         /*let next_hash = AllocatedNum::alloc(cs.namespace(|| "next_hash"), || {
             Ok(self.hashes.as_ref().unwrap()[self.batch_size])
@@ -695,20 +878,22 @@ where
 
         // state, char, opt<hash>, opt<v,q for eval>, opt<v,q for doc>
         let mut out = vec![last_state.unwrap(), last_char];
-        if self.hashes.is_some() {
-            out.push(last_hash.unwrap());
-        }
-        if self.running_claims.is_some() {
-            for qv in rc_vars {
-                out.push(qv.unwrap());
-            }
-        }
-        if self.running_doc_claims.is_some() {
-            for qv in rc_doc_vars {
-                out.push(qv.unwrap());
-            }
-        }
-
+        /*if self.hashes.is_some() {
+                    out.push(last_hash.unwrap());
+                }
+                if self.running_claims.is_some() {
+                    for qv in rc_vars {
+                        out.push(qv.unwrap());
+                    }
+                }
+                if self.running_doc_claims.is_some() {
+                    for qv in rc_doc_vars {
+                        out.push(qv.unwrap());
+                    }
+                }
+        */
         Ok(out)
     }
 }
+
+*/

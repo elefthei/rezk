@@ -27,7 +27,7 @@ fn main() {
     let mut nfa = opt.config.compile_nfa();
 
     // Input document
-    let doc: Vec<String> = opt
+    let mut doc: Vec<String> = opt
         .config
         .read_doc()
         .iter()

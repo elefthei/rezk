@@ -1,7 +1,10 @@
 type G1 = pasta_curves::pallas::Point;
 type G2 = pasta_curves::vesta::Point;
-use crate::backend::costs::{JBatching, JCommit};
-use crate::backend::{nova::*, r1cs::*};
+use crate::backend::{
+    costs::{logmn, JBatching, JCommit},
+    nova::*,
+    r1cs::*,
+};
 use crate::dfa::NFA;
 use circ::cfg::{cfg, CircOpt};
 use circ::target::r1cs::ProverData;
@@ -256,13 +259,23 @@ pub fn run_backend(
     };
     let rc_vars = match r1cs_converter.eval_type {
         JBatching::NaivePolys => None,
-        JBatching::Nlookup => Some(vec![vec![<G1 as Group>::Scalar::from(0); SC_L + 1]; 2]), // TODO
-                                                                                             // eli
-                                                                                             // function
+        JBatching::Nlookup => Some(vec![
+            vec![
+                <G1 as Group>::Scalar::from(0);
+                logmn(r1cs_converter.table.len()) + 1
+            ];
+            2
+        ]),
     };
     let rc_doc_vars = match r1cs_converter.commit_type {
         JCommit::HashChain => None,
-        JCommit::Nlookup => Some(vec![vec![<G1 as Group>::Scalar::from(0); SC_L + 1]; 2]),
+        JCommit::Nlookup => Some(vec![
+            vec![
+                <G1 as Group>::Scalar::from(0);
+                logmn(r1cs_converter.table.len()) + 1
+            ];
+            2
+        ]),
     };
 
     let circuit_primary: NFAStepCircuit<<G1 as Group>::Scalar> = NFAStepCircuit::new(
@@ -431,18 +444,20 @@ pub fn run_backend(
         let rc_vars = match r1cs_converter.eval_type {
             JBatching::NaivePolys => None,
             JBatching::Nlookup => {
-                let qv_prev = running_q
+                let mut qv_prev: Vec<<G1 as Group>::Scalar> = running_q
+                    .clone()
                     .unwrap()
                     .into_iter()
                     .map(|x| int_to_ff(x))
                     .collect();
-                qv_prev.push(int_to_ff(running_v.unwrap()));
-                let qv_next = next_running_q
+                qv_prev.push(int_to_ff(running_v.clone().unwrap()));
+                let mut qv_next: Vec<<G1 as Group>::Scalar> = next_running_q
+                    .clone()
                     .unwrap()
                     .into_iter()
                     .map(|x| int_to_ff(x))
                     .collect();
-                qv_next.push(int_to_ff(next_running_v.unwrap()));
+                qv_next.push(int_to_ff(next_running_v.clone().unwrap()));
 
                 Some(vec![qv_prev, qv_next])
             }
@@ -451,18 +466,20 @@ pub fn run_backend(
         let rc_doc_vars = match r1cs_converter.commit_type {
             JCommit::HashChain => None,
             JCommit::Nlookup => {
-                let qv_doc_prev = doc_running_q
+                let mut qv_doc_prev: Vec<<G1 as Group>::Scalar> = doc_running_q
+                    .clone()
                     .unwrap()
                     .into_iter()
                     .map(|x| int_to_ff(x))
                     .collect();
-                qv_doc_prev.push(int_to_ff(doc_running_v.unwrap()));
-                let qv_doc_next = next_doc_running_q
+                qv_doc_prev.push(int_to_ff(doc_running_v.clone().unwrap()));
+                let mut qv_doc_next: Vec<<G1 as Group>::Scalar> = next_doc_running_q
+                    .clone()
                     .unwrap()
                     .into_iter()
                     .map(|x| int_to_ff(x))
                     .collect();
-                qv_doc_next.push(int_to_ff(next_doc_running_v.unwrap()));
+                qv_doc_next.push(int_to_ff(next_doc_running_v.clone().unwrap()));
 
                 Some(vec![qv_doc_prev, qv_doc_next])
             }
