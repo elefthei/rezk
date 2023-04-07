@@ -253,29 +253,48 @@ pub fn run_backend(
 
     let s_time = Instant::now();
     // use "empty" (witness-less) circuit to generate nova F
-    let hashes = match r1cs_converter.commit_type {
-        JCommit::HashChain => Some(vec![<G1 as Group>::Scalar::from(0); 2]),
-        JCommit::Nlookup => None,
-    };
-    let rc_vars = match r1cs_converter.eval_type {
-        JBatching::NaivePolys => None,
-        JBatching::Nlookup => Some(vec![
+
+    let glue = match (r1cs_converter.eval_type, r1cs_converter.commit_type) {
+        (JBatching::NaivePolys, JCommit::HashChain) => {
             vec![
-                <G1 as Group>::Scalar::from(0);
-                logmn(r1cs_converter.table.len()) + 1
-            ];
-            2
-        ]),
-    };
-    let rc_doc_vars = match r1cs_converter.commit_type {
-        JCommit::HashChain => None,
-        JCommit::Nlookup => Some(vec![
+                GlueOpts::Poly_Hash(<G1 as Group>::Scalar::from(0)),
+                GlueOpts::Poly_Hash(<G1 as Group>::Scalar::from(0)),
+            ]
+        }
+        (JBatching::Nlookup, JCommit::HashChain) => {
+            let h = <G1 as Group>::Scalar::from(0);
+
+            let q = vec![<G1 as Group>::Scalar::from(0); logmn(r1cs_converter.table.len()) + 1];
+
+            let v = <G1 as Group>::Scalar::from(0);
+
             vec![
-                <G1 as Group>::Scalar::from(0);
-                logmn(r1cs_converter.table.len()) + 1
-            ];
-            2
-        ]),
+                GlueOpts::Nl_Hash((h.clone(), q.clone(), v.clone())),
+                GlueOpts::Nl_Hash((h, q, v)),
+            ]
+        }
+        (JBatching::NaivePolys, JCommit::Nlookup) => {
+            let doc_q = vec![<G1 as Group>::Scalar::from(0); logmn(r1cs_converter.doc.len()) + 1];
+
+            let doc_v = <G1 as Group>::Scalar::from(0);
+
+            vec![
+                GlueOpts::Poly_Nl((doc_q.clone(), doc_v.clone())),
+                GlueOpts::Poly_Nl((doc_q, doc_v)),
+            ]
+        }
+        (JBatching::Nlookup, JCommit::Nlookup) => {
+            let q = vec![<G1 as Group>::Scalar::from(0); logmn(r1cs_converter.table.len()) + 1];
+
+            let v = <G1 as Group>::Scalar::from(0);
+            let doc_q = vec![<G1 as Group>::Scalar::from(0); logmn(r1cs_converter.doc.len()) + 1];
+
+            let doc_v = <G1 as Group>::Scalar::from(0);
+            vec![
+                GlueOpts::Nl_Nl((q.clone(), v.clone(), doc_q.clone(), doc_v.clone())),
+                GlueOpts::Nl_Nl((q, v, doc_q, doc_v)),
+            ]
+        }
     };
 
     let circuit_primary: NFAStepCircuit<<G1 as Group>::Scalar> = NFAStepCircuit::new(
@@ -283,9 +302,7 @@ pub fn run_backend(
         None,
         vec![<G1 as Group>::Scalar::from(0); 2],
         vec![<G1 as Group>::Scalar::from(0); 2],
-        hashes,
-        rc_vars,
-        rc_doc_vars,
+        glue,
         r1cs_converter.batch_size,
         sc.clone(),
     );
@@ -322,12 +339,60 @@ pub fn run_backend(
 
     let mut current_state = dfa.get_init_state();
 
-    // TODO
-    let z0_primary = vec![
-        <G1 as Group>::Scalar::from(current_state as u64),
-        <G1 as Group>::Scalar::from(dfa.ab_to_num(&doc[0]) as u64),
-        <G1 as Group>::Scalar::from(0),
-    ];
+    // TODO SUBSTRING
+
+    let z0_primary = match (r1cs_converter.eval_type, r1cs_converter.commit_type) {
+        (JBatching::NaivePolys, JCommit::HashChain) => {
+            vec![
+                <G1 as Group>::Scalar::from(current_state as u64),
+                <G1 as Group>::Scalar::from(dfa.ab_to_num(&doc[0]) as u64),
+                <G1 as Group>::Scalar::from(0),
+            ]
+        }
+        (JBatching::Nlookup, JCommit::HashChain) => {
+            let mut z = vec![
+                <G1 as Group>::Scalar::from(current_state as u64),
+                <G1 as Group>::Scalar::from(dfa.ab_to_num(&doc[0]) as u64),
+                <G1 as Group>::Scalar::from(0),
+            ];
+            z.append(&mut vec![
+                <G1 as Group>::Scalar::from(0);
+                logmn(r1cs_converter.table.len()) + 1
+            ]);
+
+            z
+        }
+        (JBatching::NaivePolys, JCommit::Nlookup) => {
+            let mut z = vec![
+                <G1 as Group>::Scalar::from(current_state as u64),
+                <G1 as Group>::Scalar::from(dfa.ab_to_num(&doc[0]) as u64),
+            ];
+
+            z.append(&mut vec![
+                <G1 as Group>::Scalar::from(0);
+                logmn(r1cs_converter.doc.len()) + 1
+            ]);
+
+            z
+        }
+        (JBatching::Nlookup, JCommit::Nlookup) => {
+            let mut z = vec![
+                <G1 as Group>::Scalar::from(current_state as u64),
+                <G1 as Group>::Scalar::from(dfa.ab_to_num(&doc[0]) as u64),
+            ];
+
+            z.append(&mut vec![
+                <G1 as Group>::Scalar::from(0);
+                logmn(r1cs_converter.table.len()) + 1
+            ]);
+            z.append(&mut vec![
+                <G1 as Group>::Scalar::from(0);
+                logmn(r1cs_converter.doc.len()) + 1
+            ]);
+
+            z
+        }
+    };
 
     let z0_secondary = vec![<G2 as Group>::Scalar::zero()];
 
@@ -346,7 +411,6 @@ pub fn run_backend(
     // TODO deal with time bs
 
     let n_time = Instant::now();
-    let parameter = IOPattern(vec![SpongeOp::Absorb(2), SpongeOp::Squeeze(1)]);
 
     let num_steps =
         (r1cs_converter.substring.1 - r1cs_converter.substring.0) / r1cs_converter.batch_size;
@@ -395,93 +459,106 @@ pub fn run_backend(
         };
         //println!("next char = {}", next_char);
 
-        let hashes = match r1cs_converter.commit_type {
-            JCommit::HashChain => {
-                // todo put this in r1cs
-                let mut next_hash = <G1 as Group>::Scalar::from(0);
-                let mut intm_hash = prev_hash;
-                for b in 0..r1cs_converter.batch_size {
-                    // expected poseidon
-                    let mut sponge = Sponge::new_with_constants(&sc, Mode::Simplex);
-                    let acc = &mut ();
+        let glue = match (r1cs_converter.eval_type, r1cs_converter.commit_type) {
+            (JBatching::NaivePolys, JCommit::HashChain) => {
+                let next_hash = r1cs_converter.prover_calc_hash(prev_hash, i);
 
-                    sponge.start(parameter.clone(), None, acc);
-                    SpongeAPI::absorb(
-                        &mut sponge,
-                        2,
-                        &[
-                            intm_hash,
-                            <G1 as Group>::Scalar::from(
-                                dfa.ab_to_num(&doc[i * r1cs_converter.batch_size + b].clone())
-                                    as u64,
-                            ),
-                        ],
-                        acc,
-                    );
-                    let expected_next_hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
-                    println!(
-                        "prev, expected next hash in main {:#?} {:#?}",
-                        prev_hash, expected_next_hash
-                    );
-                    sponge.finish(acc).unwrap(); // assert expected hash finished correctly
-
-                    next_hash = expected_next_hash[0];
-                    intm_hash = next_hash;
-                }
-
-                let out = Some(vec![
-                    <G1 as Group>::Scalar::from(prev_hash),
-                    <G1 as Group>::Scalar::from(next_hash),
-                ]);
-
+                let g = vec![
+                    GlueOpts::Poly_Hash(prev_hash),
+                    GlueOpts::Poly_Hash(next_hash),
+                ];
                 prev_hash = next_hash;
 
-                out
+                g
             }
-            JCommit::Nlookup => None,
-        };
+            (JBatching::Nlookup, JCommit::HashChain) => {
+                let next_hash = r1cs_converter.prover_calc_hash(prev_hash, i);
 
-        let rc_vars = match r1cs_converter.eval_type {
-            JBatching::NaivePolys => None,
-            JBatching::Nlookup => {
-                let mut qv_prev: Vec<<G1 as Group>::Scalar> = running_q
+                let q = running_q
                     .clone()
                     .unwrap()
                     .into_iter()
                     .map(|x| int_to_ff(x))
                     .collect();
-                qv_prev.push(int_to_ff(running_v.clone().unwrap()));
-                let mut qv_next: Vec<<G1 as Group>::Scalar> = next_running_q
+
+                let v = int_to_ff(running_v.clone().unwrap());
+                let next_q = next_running_q
                     .clone()
                     .unwrap()
                     .into_iter()
                     .map(|x| int_to_ff(x))
                     .collect();
-                qv_next.push(int_to_ff(next_running_v.clone().unwrap()));
+                let next_v = int_to_ff(next_running_v.clone().unwrap());
 
-                Some(vec![qv_prev, qv_next])
+                let g = vec![
+                    GlueOpts::Nl_Hash((prev_hash, q, v)),
+                    GlueOpts::Nl_Hash((next_hash, next_q, next_v)),
+                ];
+                prev_hash = next_hash;
+
+                g
             }
-        };
-
-        let rc_doc_vars = match r1cs_converter.commit_type {
-            JCommit::HashChain => None,
-            JCommit::Nlookup => {
-                let mut qv_doc_prev: Vec<<G1 as Group>::Scalar> = doc_running_q
+            (JBatching::NaivePolys, JCommit::Nlookup) => {
+                let doc_q = doc_running_q
                     .clone()
                     .unwrap()
                     .into_iter()
                     .map(|x| int_to_ff(x))
                     .collect();
-                qv_doc_prev.push(int_to_ff(doc_running_v.clone().unwrap()));
-                let mut qv_doc_next: Vec<<G1 as Group>::Scalar> = next_doc_running_q
+
+                let doc_v = int_to_ff(doc_running_v.clone().unwrap());
+
+                let next_doc_q = next_doc_running_q
                     .clone()
                     .unwrap()
                     .into_iter()
                     .map(|x| int_to_ff(x))
                     .collect();
-                qv_doc_next.push(int_to_ff(next_doc_running_v.clone().unwrap()));
+                let next_doc_v = int_to_ff(next_doc_running_v.clone().unwrap());
 
-                Some(vec![qv_doc_prev, qv_doc_next])
+                vec![
+                    GlueOpts::Poly_Nl((doc_q, doc_v)),
+                    GlueOpts::Poly_Nl((next_doc_q, next_doc_v)),
+                ]
+            }
+            (JBatching::Nlookup, JCommit::Nlookup) => {
+                let q = running_q
+                    .clone()
+                    .unwrap()
+                    .into_iter()
+                    .map(|x| int_to_ff(x))
+                    .collect();
+
+                let v = int_to_ff(running_v.clone().unwrap());
+                let next_q = next_running_q
+                    .clone()
+                    .unwrap()
+                    .into_iter()
+                    .map(|x| int_to_ff(x))
+                    .collect();
+                let next_v = int_to_ff(next_running_v.clone().unwrap());
+
+                let doc_q = doc_running_q
+                    .clone()
+                    .unwrap()
+                    .into_iter()
+                    .map(|x| int_to_ff(x))
+                    .collect();
+
+                let doc_v = int_to_ff(doc_running_v.clone().unwrap());
+
+                let next_doc_q = next_doc_running_q
+                    .clone()
+                    .unwrap()
+                    .into_iter()
+                    .map(|x| int_to_ff(x))
+                    .collect();
+                let next_doc_v = int_to_ff(next_doc_running_v.clone().unwrap());
+
+                vec![
+                    GlueOpts::Nl_Nl((q, v, doc_q, doc_v)),
+                    GlueOpts::Nl_Nl((next_q, next_v, next_doc_q, next_doc_v)),
+                ]
             }
         };
 
@@ -496,9 +573,7 @@ pub fn run_backend(
                 <G1 as Group>::Scalar::from(dfa.ab_to_num(&current_char) as u64),
                 <G1 as Group>::Scalar::from(dfa.ab_to_num(&next_char) as u64),
             ],
-            hashes,
-            rc_vars,
-            rc_doc_vars,
+            glue,
             r1cs_converter.batch_size,
             sc.clone(),
         );

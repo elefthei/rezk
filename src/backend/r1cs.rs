@@ -337,7 +337,7 @@ pub struct R1CS<'a, F: PrimeField> {
     // sticking out here
     pub_inputs: Vec<Term>,
     pub batch_size: usize,
-    doc: Vec<String>,
+    pub doc: Vec<String>,
     is_match: bool,
     pub substring: (usize, usize), // todo getters
     pc: PoseidonConstants<F, typenum::U2>,
@@ -448,6 +448,42 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
     }
 
     // PROVER
+
+    pub fn prover_calc_hash(&self, start_hash: F, i: usize) -> F {
+        let mut next_hash = start_hash;
+        let parameter = IOPattern(vec![SpongeOp::Absorb(2), SpongeOp::Squeeze(1)]);
+        for b in 0..self.batch_size {
+            // expected poseidon
+            let mut sponge = Sponge::new_with_constants(&self.pc, Mode::Simplex);
+            let acc = &mut ();
+
+            sponge.start(parameter.clone(), None, acc);
+            SpongeAPI::absorb(
+                &mut sponge,
+                2,
+                &[
+                    next_hash,
+                    F::from(
+                        self.dfa
+                            .ab_to_num(&self.doc[i * self.batch_size + b].clone())
+                            as u64,
+                    ),
+                ],
+                acc,
+            );
+            let expected_next_hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
+            /*println!(
+                "prev, expected next hash in main {:#?} {:#?}",
+                prev_hash, expected_next_hash
+            );
+            */
+            sponge.finish(acc).unwrap(); // assert expected hash finished correctly
+
+            next_hash = expected_next_hash[0];
+        }
+
+        next_hash
+    }
 
     // seed Questions todo
     fn prover_random_from_seed(&self, absorbs: u32, s: &[F]) -> Integer {
