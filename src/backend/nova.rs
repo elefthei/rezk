@@ -99,6 +99,7 @@ pub struct NFAStepCircuit<'a, F: PrimeField> {
     states: Vec<F>,
     chars: Vec<F>,
     glue: Vec<GlueOpts<F>>,
+    accepting_bool: Vec<F>,
     pc: PoseidonConstants<F, typenum::U2>,
 }
 
@@ -111,6 +112,7 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
         states: Vec<F>,
         chars: Vec<F>,
         glue: Vec<GlueOpts<F>>,
+        accepting_bool: Vec<F>,
         batch_size: usize,
         pcs: PoseidonConstants<F, typenum::U2>,
     ) -> Self {
@@ -119,6 +121,7 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
         assert_eq!(chars.len(), 2); // only need in/out for all of these
         assert_eq!(states.len(), 2);
         assert_eq!(glue.len(), 2);
+        assert_eq!(accepting_bool.len(), 2);
 
         match (&glue[0], &glue[1]) {
             (GlueOpts::Poly_Hash(_), GlueOpts::Poly_Hash(_)) => {}
@@ -150,15 +153,12 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
             states: states,
             chars: chars,
             glue: glue,
+            accepting_bool: accepting_bool,
             pc: pcs,
         }
     }
 
-    fn generate_variable_info(
-        &self,
-        var: Var,
-        i: usize,
-    ) -> (String, Result<F, SynthesisError>, String) {
+    fn generate_variable_info(&self, var: Var) -> (String, String) {
         assert!(
             !matches!(var.ty(), VarType::CWit),
             "Nova doesn't support committed witnesses"
@@ -170,17 +170,9 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
         let public = matches!(var.ty(), VarType::Inst); // but we really dont care
         let name_f = format!("{var:?}");
 
-        let val_f = {
-            Ok({
-                let i_val = &self.values.as_ref().expect("missing values")[i];
-                let ff_val = int_to_ff(i_val.as_pf().into());
-                //debug!("value : {var:?} -> {ff_val:?} ({i_val})");
-                ff_val
-            })
-        };
         let s = self.r1cs.names[&var].clone();
 
-        (name_f, val_f, s)
+        (name_f, s)
     }
 
     fn input_variable_parsing<CS>(
@@ -204,24 +196,6 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
             return Ok(true);
         }
         return Ok(false);
-    }
-
-    fn default_variable_parsing<CS>(
-        &self,
-        cs: &mut CS,
-        alloc_v: &AllocatedNum<F>,
-        s: &String,
-    ) -> Result<Option<AllocatedNum<F>>, SynthesisError>
-    where
-        CS: ConstraintSystem<F>,
-    {
-        if s.starts_with(&format!("state_{}", self.batch_size)) {
-            let last_state = Some(alloc_v.clone()); //.get_variable(); // TODO can we create binding here?
-                                                    //-- TODO must return last state
-
-            return Ok(last_state);
-        }
-        return Ok(None);
     }
 
     fn hash_parsing<CS>(
@@ -332,7 +306,7 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
             return Ok(true);
         } else if s.starts_with("nl_claim_r") {
             println!("adding nlookup eval hashes in nova");
-            self.poseidon_circuit(cs, alloc_v, format!("sumcheck hash ns"), F::from(5 as u64)); // TODO
+            self.poseidon_circuit(cs, alloc_v, format!("sumcheck hash ns"), F::from(5 as u64))?; // TODO
 
             return Ok(true);
         } else if s.starts_with("nl_sc_r_") {
@@ -340,7 +314,7 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
             let s_sub: Vec<&str> = s.split("_").collect();
             let r: u64 = s_sub[3].parse().unwrap();
 
-            self.poseidon_circuit(cs, alloc_v, format!("sumcheck round ns {}", r), F::from(r)); // TODO
+            self.poseidon_circuit(cs, alloc_v, format!("sumcheck round ns {}", r), F::from(r))?; // TODO
 
             return Ok(true);
         }
@@ -380,7 +354,7 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
                 alloc_v,
                 format!("doc sumcheck hash ns"),
                 F::from(5 as u64),
-            ); // TODO
+            )?; // TODO
 
             return Ok(true);
         } else if s.starts_with("nl_doc_sc_r_") {
@@ -394,7 +368,7 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
                 alloc_v,
                 format!("doc sumcheck round ns {}", r),
                 F::from(r),
-            ); // TODO
+            )?; // TODO
 
             return Ok(true);
         }
@@ -469,7 +443,7 @@ where
     fn arity(&self) -> usize {
         // [state, char, opt<hash>, opt<v,q for eval claim>, opt<v,q for doc claim>]
 
-        let mut arity = 2;
+        let mut arity = 3;
         match &self.glue[0] {
             GlueOpts::Poly_Hash(_) => {
                 arity += 1;
@@ -490,29 +464,31 @@ where
         assert_eq!(z[0], self.states[0]); // "current state"
         assert_eq!(z[1], self.chars[0]);
 
+        let mut i = 2;
         match &self.glue[0] {
             GlueOpts::Poly_Hash(h) => {
-                assert_eq!(z[2], *h);
+                assert_eq!(z[i], *h);
+                i += 1;
             }
             GlueOpts::Nl_Hash((h, q, v)) => {
-                assert_eq!(z[2], *h);
-                let mut i = 3;
+                assert_eq!(z[i], *h);
+                i += 1;
                 for qi in q {
                     assert_eq!(z[i], *qi);
                     i += 1;
                 }
                 assert_eq!(z[i], *v);
+                i += 1;
             }
             GlueOpts::Poly_Nl((dq, dv)) => {
-                let mut i = 2;
                 for qi in dq {
                     assert_eq!(z[i], *qi);
                     i += 1;
                 }
                 assert_eq!(z[i], *dv);
+                i += 1;
             }
             GlueOpts::Nl_Nl((q, v, dq, dv)) => {
-                let mut i = 2;
                 for qi in q {
                     assert_eq!(z[i], *qi);
                     i += 1;
@@ -524,8 +500,10 @@ where
                     i += 1;
                 }
                 assert_eq!(z[i], *dv);
+                i += 1;
             }
         }
+        assert_eq!(z[i], self.accepting_bool[0]);
 
         // calc out
         let mut out = vec![
@@ -552,6 +530,7 @@ where
                 out.push(*dv);
             }
         }
+        out.push(self.accepting_bool[1]);
 
         out
     }
@@ -590,6 +569,7 @@ where
         );
 
         let mut last_state = None;
+        let mut accepting = None;
         let mut out = vec![];
 
         let mut vars = HashMap::with_capacity(self.r1cs.vars.len());
@@ -601,7 +581,16 @@ where
         match &self.glue[0] {
             GlueOpts::Poly_Hash(h) => {
                 for (i, var) in self.r1cs.vars.iter().copied().enumerate() {
-                    let (name_f, val_f, s) = self.generate_variable_info(var, i);
+                    let (name_f, s) = self.generate_variable_info(var);
+
+                    let val_f = || {
+                        Ok({
+                            let i_val = &self.values.as_ref().expect("missing values")[i];
+                            let ff_val = int_to_ff(i_val.as_pf().into());
+                            //debug!("value : {var:?} -> {ff_val:?} ({i_val})");
+                            ff_val
+                        })
+                    };
 
                     let mut matched = self
                         .input_variable_parsing(
@@ -615,7 +604,7 @@ where
                         .unwrap();
 
                     if !matched {
-                        let alloc_v = AllocatedNum::alloc(cs.namespace(|| name_f), || val_f)?;
+                        let alloc_v = AllocatedNum::alloc(cs.namespace(|| name_f), val_f)?;
                         vars.insert(var, alloc_v.get_variable());
 
                         matched = self
@@ -623,9 +612,11 @@ where
                             .unwrap();
 
                         if !matched {
-                            let ls = self.default_variable_parsing(cs, &alloc_v, &s);
-                            if matches!(ls, Ok(Some(_))) {
-                                last_state = ls.unwrap();
+                            if s.starts_with(&format!("state_{}", self.batch_size)) {
+                                last_state = Some(alloc_v.clone());
+                            } else if s.starts_with(&format!("accepting")) {
+                                accepting = Some(alloc_v.clone());
+                                println!("accepting {:#?}", accepting.clone().unwrap().get_value());
                             }
                         }
                     }
@@ -641,7 +632,16 @@ where
                 alloc_rc = vec![None; sc_l + 1];
 
                 for (i, var) in self.r1cs.vars.iter().copied().enumerate() {
-                    let (name_f, val_f, s) = self.generate_variable_info(var, i);
+                    let (name_f, s) = self.generate_variable_info(var);
+
+                    let val_f = || {
+                        Ok({
+                            let i_val = &self.values.as_ref().expect("missing values")[i];
+                            let ff_val = int_to_ff(i_val.as_pf().into());
+                            //debug!("value : {var:?} -> {ff_val:?} ({i_val})");
+                            ff_val
+                        })
+                    };
 
                     let mut matched = self
                         .input_variable_parsing(
@@ -654,7 +654,7 @@ where
                         )
                         .unwrap();
                     if !matched {
-                        let alloc_v = AllocatedNum::alloc(cs.namespace(|| name_f), || val_f)?;
+                        let alloc_v = AllocatedNum::alloc(cs.namespace(|| name_f), val_f)?;
                         vars.insert(var, alloc_v.get_variable());
 
                         matched = self
@@ -665,9 +665,10 @@ where
                                 .nl_eval_parsing(cs, &alloc_v, &s, sc_l, &mut alloc_rc)
                                 .unwrap();
                             if !matched {
-                                let ls = self.default_variable_parsing(cs, &alloc_v, &s);
-                                if matches!(ls, Ok(Some(_))) {
-                                    last_state = ls.unwrap();
+                                if s.starts_with(&format!("state_{}", self.batch_size)) {
+                                    last_state = Some(alloc_v.clone());
+                                } else if s.starts_with(&format!("accepting")) {
+                                    accepting = Some(alloc_v.clone());
                                 }
                             }
                         }
@@ -686,8 +687,16 @@ where
                 alloc_doc_rc = vec![None; doc_l + 1];
 
                 for (i, var) in self.r1cs.vars.iter().copied().enumerate() {
-                    let (name_f, val_f, s) = self.generate_variable_info(var, i);
+                    let (name_f, s) = self.generate_variable_info(var);
 
+                    let val_f = || {
+                        Ok({
+                            let i_val = &self.values.as_ref().expect("missing values")[i];
+                            let ff_val = int_to_ff(i_val.as_pf().into());
+                            //debug!("value : {var:?} -> {ff_val:?} ({i_val})");
+                            ff_val
+                        })
+                    };
                     let mut matched = self
                         .input_variable_parsing(
                             cs,
@@ -699,16 +708,17 @@ where
                         )
                         .unwrap();
                     if !matched {
-                        let alloc_v = AllocatedNum::alloc(cs.namespace(|| name_f), || val_f)?;
+                        let alloc_v = AllocatedNum::alloc(cs.namespace(|| name_f), val_f)?;
                         vars.insert(var, alloc_v.get_variable());
 
                         matched = self
                             .nl_doc_parsing(cs, &alloc_v, &s, doc_l, &mut alloc_doc_rc)
                             .unwrap();
                         if !matched {
-                            let ls = self.default_variable_parsing(cs, &alloc_v, &s);
-                            if matches!(ls, Ok(Some(_))) {
-                                last_state = ls.unwrap();
+                            if s.starts_with(&format!("state_{}", self.batch_size)) {
+                                last_state = Some(alloc_v.clone());
+                            } else if s.starts_with(&format!("accepting")) {
+                                accepting = Some(alloc_v.clone());
                             }
                         }
                     }
@@ -727,8 +737,16 @@ where
                 alloc_doc_rc = vec![None; doc_l + 1];
 
                 for (i, var) in self.r1cs.vars.iter().copied().enumerate() {
-                    let (name_f, val_f, s) = self.generate_variable_info(var, i);
+                    let (name_f, s) = self.generate_variable_info(var);
 
+                    let val_f = || {
+                        Ok({
+                            let i_val = &self.values.as_ref().expect("missing values")[i];
+                            let ff_val = int_to_ff(i_val.as_pf().into());
+                            //debug!("value : {var:?} -> {ff_val:?} ({i_val})");
+                            ff_val
+                        })
+                    };
                     let mut matched = self
                         .input_variable_parsing(
                             cs,
@@ -741,7 +759,7 @@ where
                         .unwrap();
 
                     if !matched {
-                        let alloc_v = AllocatedNum::alloc(cs.namespace(|| name_f), || val_f)?;
+                        let alloc_v = AllocatedNum::alloc(cs.namespace(|| name_f), val_f)?;
                         vars.insert(var, alloc_v.get_variable());
 
                         matched = self
@@ -752,9 +770,10 @@ where
                                 .nl_doc_parsing(cs, &alloc_v, &s, doc_l, &mut alloc_doc_rc)
                                 .unwrap();
                             if !matched {
-                                let ls = self.default_variable_parsing(cs, &alloc_v, &s);
-                                if matches!(ls, Ok(Some(_))) {
-                                    last_state = ls.unwrap();
+                                if s.starts_with(&format!("state_{}", self.batch_size)) {
+                                    last_state = Some(alloc_v.clone());
+                                } else if s.starts_with(&format!("accepting")) {
+                                    accepting = Some(alloc_v.clone());
                                 }
                             }
                         }
@@ -770,6 +789,8 @@ where
                 }
             }
         }
+        out.push(accepting.unwrap());
+
         for (i, (a, b, c)) in self.r1cs.constraints.iter().enumerate() {
             cs.enforce(
                 || format!("con{}", i),
@@ -784,7 +805,7 @@ where
             self.r1cs.constraints.len()
         );
 
-        // state, char, opt<hash>, opt<v,q for eval>, opt<v,q for doc>
+        // state, char, opt<hash>, opt<v,q for eval>, opt<v,q for doc>. accepting
         Ok(out)
     }
 }

@@ -501,7 +501,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         Integer::from_digits(rand[0].to_repr().as_ref(), Order::Lsf)
     }
 
-    fn prover_accepting_state(&self, batch_num: usize, state: usize) -> bool {
+    pub fn prover_accepting_state(&self, batch_num: usize, state: usize) -> bool {
         let mut out = false;
 
         if self.is_match {
@@ -515,7 +515,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
             }
         }
 
-        println!("ACCEPTING CHECK: state: {:#?} accepting? {:#?}", state, out);
+        //println!("ACCEPTING CHECK: state: {:#?} accepting? {:#?}", state, out);
 
         // sanity
         if (batch_num + 1) * self.batch_size >= self.doc.len() {

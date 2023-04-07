@@ -235,6 +235,9 @@ pub fn run_backend(
         batching_type,
         commit_type,
     );
+
+    let q_len = logmn(r1cs_converter.table.len());
+    let qd_len = logmn(r1cs_converter.doc.len());
     //let parse_ms = p_time.elapsed().as_millis();
 
     // doc to usizes - can I use this elsewhere too? TODO
@@ -264,7 +267,7 @@ pub fn run_backend(
         (JBatching::Nlookup, JCommit::HashChain) => {
             let h = <G1 as Group>::Scalar::from(0);
 
-            let q = vec![<G1 as Group>::Scalar::from(0); logmn(r1cs_converter.table.len()) + 1];
+            let q = vec![<G1 as Group>::Scalar::from(0); q_len + 1];
 
             let v = <G1 as Group>::Scalar::from(0);
 
@@ -274,7 +277,7 @@ pub fn run_backend(
             ]
         }
         (JBatching::NaivePolys, JCommit::Nlookup) => {
-            let doc_q = vec![<G1 as Group>::Scalar::from(0); logmn(r1cs_converter.doc.len()) + 1];
+            let doc_q = vec![<G1 as Group>::Scalar::from(0); qd_len + 1];
 
             let doc_v = <G1 as Group>::Scalar::from(0);
 
@@ -284,10 +287,10 @@ pub fn run_backend(
             ]
         }
         (JBatching::Nlookup, JCommit::Nlookup) => {
-            let q = vec![<G1 as Group>::Scalar::from(0); logmn(r1cs_converter.table.len()) + 1];
+            let q = vec![<G1 as Group>::Scalar::from(0); q_len + 1];
 
             let v = <G1 as Group>::Scalar::from(0);
-            let doc_q = vec![<G1 as Group>::Scalar::from(0); logmn(r1cs_converter.doc.len()) + 1];
+            let doc_q = vec![<G1 as Group>::Scalar::from(0); qd_len + 1];
 
             let doc_v = <G1 as Group>::Scalar::from(0);
             vec![
@@ -303,6 +306,7 @@ pub fn run_backend(
         vec![<G1 as Group>::Scalar::from(0); 2],
         vec![<G1 as Group>::Scalar::from(0); 2],
         glue,
+        vec![<G1 as Group>::Scalar::from(0); 2],
         r1cs_converter.batch_size,
         sc.clone(),
     );
@@ -347,6 +351,9 @@ pub fn run_backend(
                 <G1 as Group>::Scalar::from(current_state as u64),
                 <G1 as Group>::Scalar::from(dfa.ab_to_num(&doc[0]) as u64),
                 <G1 as Group>::Scalar::from(0),
+                <G1 as Group>::Scalar::from(
+                    r1cs_converter.prover_accepting_state(0, current_state),
+                ),
             ]
         }
         (JBatching::Nlookup, JCommit::HashChain) => {
@@ -355,11 +362,10 @@ pub fn run_backend(
                 <G1 as Group>::Scalar::from(dfa.ab_to_num(&doc[0]) as u64),
                 <G1 as Group>::Scalar::from(0),
             ];
-            z.append(&mut vec![
-                <G1 as Group>::Scalar::from(0);
-                logmn(r1cs_converter.table.len()) + 1
-            ]);
-
+            z.append(&mut vec![<G1 as Group>::Scalar::from(0); q_len + 1]);
+            z.push(<G1 as Group>::Scalar::from(
+                r1cs_converter.prover_accepting_state(0, current_state),
+            ));
             z
         }
         (JBatching::NaivePolys, JCommit::Nlookup) => {
@@ -368,11 +374,10 @@ pub fn run_backend(
                 <G1 as Group>::Scalar::from(dfa.ab_to_num(&doc[0]) as u64),
             ];
 
-            z.append(&mut vec![
-                <G1 as Group>::Scalar::from(0);
-                logmn(r1cs_converter.doc.len()) + 1
-            ]);
-
+            z.append(&mut vec![<G1 as Group>::Scalar::from(0); qd_len + 1]);
+            z.push(<G1 as Group>::Scalar::from(
+                r1cs_converter.prover_accepting_state(0, current_state),
+            ));
             z
         }
         (JBatching::Nlookup, JCommit::Nlookup) => {
@@ -381,15 +386,11 @@ pub fn run_backend(
                 <G1 as Group>::Scalar::from(dfa.ab_to_num(&doc[0]) as u64),
             ];
 
-            z.append(&mut vec![
-                <G1 as Group>::Scalar::from(0);
-                logmn(r1cs_converter.table.len()) + 1
-            ]);
-            z.append(&mut vec![
-                <G1 as Group>::Scalar::from(0);
-                logmn(r1cs_converter.doc.len()) + 1
-            ]);
-
+            z.append(&mut vec![<G1 as Group>::Scalar::from(0); q_len + 1]);
+            z.append(&mut vec![<G1 as Group>::Scalar::from(0); qd_len + 1]);
+            z.push(<G1 as Group>::Scalar::from(
+                r1cs_converter.prover_accepting_state(0, current_state),
+            ));
             z
         }
     };
@@ -562,6 +563,10 @@ pub fn run_backend(
             }
         };
 
+        let acc = r1cs_converter.prover_accepting_state(i, current_state);
+        let nacc = r1cs_converter.prover_accepting_state(i, next_state);
+        println!("accepting: {:#?} -> {:#?}", acc, nacc);
+
         let circuit_primary: NFAStepCircuit<<G1 as Group>::Scalar> = NFAStepCircuit::new(
             &prover_data,
             Some(wits),
@@ -574,6 +579,10 @@ pub fn run_backend(
                 <G1 as Group>::Scalar::from(dfa.ab_to_num(&next_char) as u64),
             ],
             glue,
+            vec![
+                <G1 as Group>::Scalar::from(acc),
+                <G1 as Group>::Scalar::from(nacc),
+            ],
             r1cs_converter.batch_size,
             sc.clone(),
         );
@@ -641,6 +650,7 @@ pub fn run_backend(
     println!("nova verifier ms {:#?}", nova_verifier_ms);
 
     // final "in the clear" V checks
+    // // state, char, opt<hash>, opt<v,q for eval>, opt<v,q for doc>, accepting
     let zn = res.unwrap().0;
 
     // eval type, reef commitment, accepting state bool, table, final_q, final_v, final_hash
@@ -650,11 +660,11 @@ pub fn run_backend(
             final_clear_checks(
                 r1cs_converter.eval_type,
                 reef_commit,
-                zn[0],
+                zn[3],
                 &r1cs_converter.table,
                 None,
                 None,
-                Some(zn[0]),
+                Some(zn[2]),
                 None,
                 None,
             );
@@ -663,24 +673,24 @@ pub fn run_backend(
             final_clear_checks(
                 r1cs_converter.eval_type,
                 reef_commit,
-                zn[0],
+                zn[2 + qd_len + 1],
                 &r1cs_converter.table,
                 None,
                 None,
                 None,
-                Some(zn[0..3].to_vec()),
-                Some(zn[0]),
+                Some(zn[2..(qd_len + 2)].to_vec()),
+                Some(zn[2 + qd_len]),
             );
         }
         (JBatching::Nlookup, JCommit::HashChain) => {
             final_clear_checks(
                 r1cs_converter.eval_type,
                 reef_commit,
-                zn[0],
+                zn[3 + q_len + 1],
                 &r1cs_converter.table,
-                Some(zn[0..3].to_vec()),
-                Some(zn[0]),
-                Some(zn[0]),
+                Some(zn[3..(3 + q_len)].to_vec()),
+                Some(zn[3 + q_len]),
+                Some(zn[2]),
                 None,
                 None,
             );
@@ -689,13 +699,13 @@ pub fn run_backend(
             final_clear_checks(
                 r1cs_converter.eval_type,
                 reef_commit,
-                zn[0],
+                zn[2 + q_len + 1 + qd_len + 1],
                 &r1cs_converter.table,
-                Some(zn[0..3].to_vec()),
-                Some(zn[0]),
+                Some(zn[2..(q_len + 2)].to_vec()),
+                Some(zn[q_len + 2]),
                 None,
-                Some(zn[0..3].to_vec()),
-                Some(zn[0]),
+                Some(zn[(2 + q_len + 1)..(2 + q_len + 1 + qd_len)].to_vec()),
+                Some(zn[2 + q_len + 1 + qd_len]),
             );
         }
     }
