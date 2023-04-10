@@ -294,6 +294,7 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
 
             alloc_rc[sc_l] = Some(alloc_v.clone());
 
+            println!("ALLOC_RC: {:#?}", sc_l);
             return Ok(true);
         } else if s.starts_with(&format!("nl_eq_{}", self.batch_size)) {
             // nl_eq_<NUM>_q_<NUM>
@@ -302,7 +303,7 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
             let q: usize = s_sub[4].parse().unwrap();
 
             alloc_rc[q] = Some(alloc_v.clone());
-
+            println!("ALLOC_RC: {:#?}", alloc_rc[q].is_some());
             return Ok(true);
         } else if s.starts_with("nl_claim_r") {
             println!("adding nlookup eval hashes in nova");
@@ -530,7 +531,7 @@ where
                 out.push(*dv);
             }
         }
-        //  out.push(self.accepting_bool[1]);
+        //out.push(self.accepting_bool[1]);
 
         out
     }
@@ -587,7 +588,7 @@ where
                         Ok({
                             let i_val = &self.values.as_ref().expect("missing values")[i];
                             let ff_val = int_to_ff(i_val.as_pf().into());
-                            //debug!("value : {var:?} -> {ff_val:?} ({i_val})");
+                            println!("value : {var:?} -> {ff_val:?} ({i_val})");
                             ff_val
                         })
                     };
@@ -628,6 +629,7 @@ where
                 out.push(last_hash.unwrap());
             }
             GlueOpts::Nl_Hash((h, q, v)) => {
+                println!("SANITY");
                 // can prob use these vals to sanity check
                 let sc_l = q.len();
                 alloc_rc = vec![None; sc_l + 1];
@@ -676,7 +678,8 @@ where
                         }
                     }
                 }
-                out.push(last_state.unwrap());
+
+                out.push(last_char.clone()); //state.unwrap());
                 out.push(last_char);
                 let last_hash = self.hash_circuit(cs, z[2].clone(), alloc_chars);
                 out.push(last_hash.unwrap());
@@ -785,6 +788,7 @@ where
                 }
                 out.push(last_state.unwrap());
                 out.push(last_char);
+                println!("full alloc len {:#?}", alloc_rc.len());
                 for qv in alloc_rc {
                     out.push(qv.unwrap()); // better way to do this?
                 }

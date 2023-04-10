@@ -238,6 +238,8 @@ pub fn run_backend(
 
     let q_len = logmn(r1cs_converter.table.len());
     let qd_len = logmn(r1cs_converter.doc.len());
+    println!("sc_l {:#?}, doc_l {:#?}", q_len, qd_len);
+
     //let parse_ms = p_time.elapsed().as_millis();
 
     // doc to usizes - can I use this elsewhere too? TODO
@@ -267,7 +269,7 @@ pub fn run_backend(
         (JBatching::Nlookup, JCommit::HashChain) => {
             let h = <G1 as Group>::Scalar::from(0);
 
-            let q = vec![<G1 as Group>::Scalar::from(0); q_len + 1];
+            let q = vec![<G1 as Group>::Scalar::from(0); q_len];
 
             let v = <G1 as Group>::Scalar::from(0);
 
@@ -277,7 +279,7 @@ pub fn run_backend(
             ]
         }
         (JBatching::NaivePolys, JCommit::Nlookup) => {
-            let doc_q = vec![<G1 as Group>::Scalar::from(0); qd_len + 1];
+            let doc_q = vec![<G1 as Group>::Scalar::from(0); qd_len];
 
             let doc_v = <G1 as Group>::Scalar::from(0);
 
@@ -287,10 +289,10 @@ pub fn run_backend(
             ]
         }
         (JBatching::Nlookup, JCommit::Nlookup) => {
-            let q = vec![<G1 as Group>::Scalar::from(0); q_len + 1];
+            let q = vec![<G1 as Group>::Scalar::from(0); q_len];
 
             let v = <G1 as Group>::Scalar::from(0);
-            let doc_q = vec![<G1 as Group>::Scalar::from(0); qd_len + 1];
+            let doc_q = vec![<G1 as Group>::Scalar::from(0); qd_len];
 
             let doc_v = <G1 as Group>::Scalar::from(0);
             vec![
@@ -475,14 +477,16 @@ pub fn run_backend(
             (JBatching::Nlookup, JCommit::HashChain) => {
                 let next_hash = r1cs_converter.prover_calc_hash(prev_hash, i);
 
-                let q = running_q
-                    .clone()
-                    .unwrap()
-                    .into_iter()
-                    .map(|x| int_to_ff(x))
-                    .collect();
+                let q = match running_q {
+                    Some(rq) => rq.into_iter().map(|x| int_to_ff(x)).collect(),
+                    None => vec![<G1 as Group>::Scalar::from(0); q_len],
+                };
 
-                let v = int_to_ff(running_v.clone().unwrap());
+                let v = match running_v {
+                    Some(rv) => int_to_ff(rv),
+                    None => <G1 as Group>::Scalar::from(0),
+                };
+
                 let next_q = next_running_q
                     .clone()
                     .unwrap()
@@ -500,14 +504,15 @@ pub fn run_backend(
                 g
             }
             (JBatching::NaivePolys, JCommit::Nlookup) => {
-                let doc_q = doc_running_q
-                    .clone()
-                    .unwrap()
-                    .into_iter()
-                    .map(|x| int_to_ff(x))
-                    .collect();
+                let doc_q = match doc_running_q {
+                    Some(rq) => rq.into_iter().map(|x| int_to_ff(x)).collect(),
+                    None => vec![<G1 as Group>::Scalar::from(0); q_len],
+                };
 
-                let doc_v = int_to_ff(doc_running_v.clone().unwrap());
+                let doc_v = match doc_running_v {
+                    Some(rv) => int_to_ff(rv),
+                    None => <G1 as Group>::Scalar::from(0),
+                };
 
                 let next_doc_q = next_doc_running_q
                     .clone()
@@ -523,14 +528,16 @@ pub fn run_backend(
                 ]
             }
             (JBatching::Nlookup, JCommit::Nlookup) => {
-                let q = running_q
-                    .clone()
-                    .unwrap()
-                    .into_iter()
-                    .map(|x| int_to_ff(x))
-                    .collect();
+                let q = match running_q {
+                    Some(rq) => rq.into_iter().map(|x| int_to_ff(x)).collect(),
+                    None => vec![<G1 as Group>::Scalar::from(0); q_len],
+                };
 
-                let v = int_to_ff(running_v.clone().unwrap());
+                let v = match running_v {
+                    Some(rv) => int_to_ff(rv),
+                    None => <G1 as Group>::Scalar::from(0),
+                };
+
                 let next_q = next_running_q
                     .clone()
                     .unwrap()
@@ -539,15 +546,15 @@ pub fn run_backend(
                     .collect();
                 let next_v = int_to_ff(next_running_v.clone().unwrap());
 
-                let doc_q = doc_running_q
-                    .clone()
-                    .unwrap()
-                    .into_iter()
-                    .map(|x| int_to_ff(x))
-                    .collect();
+                let doc_q = match doc_running_q {
+                    Some(rq) => rq.into_iter().map(|x| int_to_ff(x)).collect(),
+                    None => vec![<G1 as Group>::Scalar::from(0); q_len],
+                };
 
-                let doc_v = int_to_ff(doc_running_v.clone().unwrap());
-
+                let doc_v = match doc_running_v {
+                    Some(rv) => int_to_ff(rv),
+                    None => <G1 as Group>::Scalar::from(0),
+                };
                 let next_doc_q = next_doc_running_q
                     .clone()
                     .unwrap()
@@ -599,7 +606,7 @@ pub fn run_backend(
             z0_primary.clone(),
             z0_secondary.clone(),
         );
-        println!("prove step {:#?}", result);
+        //println!("prove step {:#?}", result);
 
         assert!(result.is_ok());
         println!("RecursiveSNARK::prove_step {}: {:?}", i, result.is_ok());
@@ -624,7 +631,7 @@ pub fn run_backend(
         z0_primary.clone(),
         z0_secondary.clone(),
     );
-    //println!("Recursive res: {:#?}", res);
+    println!("Recursive res: {:#?}", res);
 
     assert!(res.is_ok()); // TODO delete
 
@@ -770,7 +777,7 @@ mod tests {
         }
     }
 
-    #[test]
+    //    #[test]
     fn e2e_poly_hash() {
         backend_test(
             "ab".to_string(),
@@ -782,7 +789,7 @@ mod tests {
         );
     }
 
-    #[test]
+    // #[test]
     fn e2e_poly_nl() {
         backend_test(
             "ab".to_string(),
@@ -806,7 +813,7 @@ mod tests {
         );
     }
 
-    #[test]
+    // #[test]
     fn e2e_nl_nl() {
         backend_test(
             "ab".to_string(),

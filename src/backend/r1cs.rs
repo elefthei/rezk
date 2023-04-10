@@ -1231,6 +1231,11 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
             (eq_term * next_running_v.clone()).rem_floor(cfg().field().modulus())
         );
 
+        println!(
+            "running claim sanity q {:#?}, v {:#?}",
+            next_running_q, next_running_v
+        );
+
         // return
         // println!("wits: {:#?}", wits);
 
