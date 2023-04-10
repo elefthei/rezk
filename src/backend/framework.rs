@@ -351,9 +351,9 @@ pub fn run_backend(
                 <G1 as Group>::Scalar::from(current_state as u64),
                 <G1 as Group>::Scalar::from(dfa.ab_to_num(&doc[0]) as u64),
                 <G1 as Group>::Scalar::from(0),
-                <G1 as Group>::Scalar::from(
+                /*            <G1 as Group>::Scalar::from(
                     r1cs_converter.prover_accepting_state(0, current_state),
-                ),
+                ),*/
             ]
         }
         (JBatching::Nlookup, JCommit::HashChain) => {
@@ -363,9 +363,9 @@ pub fn run_backend(
                 <G1 as Group>::Scalar::from(0),
             ];
             z.append(&mut vec![<G1 as Group>::Scalar::from(0); q_len + 1]);
-            z.push(<G1 as Group>::Scalar::from(
+            /*  z.push(<G1 as Group>::Scalar::from(
                 r1cs_converter.prover_accepting_state(0, current_state),
-            ));
+            ));*/
             z
         }
         (JBatching::NaivePolys, JCommit::Nlookup) => {
@@ -375,9 +375,9 @@ pub fn run_backend(
             ];
 
             z.append(&mut vec![<G1 as Group>::Scalar::from(0); qd_len + 1]);
-            z.push(<G1 as Group>::Scalar::from(
+            /* z.push(<G1 as Group>::Scalar::from(
                 r1cs_converter.prover_accepting_state(0, current_state),
-            ));
+            ));*/
             z
         }
         (JBatching::Nlookup, JCommit::Nlookup) => {
@@ -388,9 +388,9 @@ pub fn run_backend(
 
             z.append(&mut vec![<G1 as Group>::Scalar::from(0); q_len + 1]);
             z.append(&mut vec![<G1 as Group>::Scalar::from(0); qd_len + 1]);
-            z.push(<G1 as Group>::Scalar::from(
+            /*z.push(<G1 as Group>::Scalar::from(
                 r1cs_converter.prover_accepting_state(0, current_state),
-            ));
+            ));*/
             z
         }
     };
@@ -599,7 +599,7 @@ pub fn run_backend(
             z0_primary.clone(),
             z0_secondary.clone(),
         );
-        //println!("prove step {:#?}", result);
+        println!("prove step {:#?}", result);
 
         assert!(result.is_ok());
         println!("RecursiveSNARK::prove_step {}: {:?}", i, result.is_ok());

@@ -292,7 +292,7 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
         if s.starts_with("nl_prev_running_claim") {
             // v
 
-            alloc_rc[sc_l - 1] = Some(alloc_v.clone());
+            alloc_rc[sc_l] = Some(alloc_v.clone());
 
             return Ok(true);
         } else if s.starts_with(&format!("nl_eq_{}", self.batch_size)) {
@@ -335,7 +335,7 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
         if s.starts_with("nl_doc_prev_running_claim") {
             // doc v
 
-            alloc_doc_rc[doc_l - 1] = Some(alloc_v.clone());
+            alloc_doc_rc[doc_l] = Some(alloc_v.clone());
             return Ok(true);
         } else if s.starts_with(&format!("nl_doc_eq_{}", self.batch_size)) {
             // nl_eq_<NUM>_q_<NUM>
@@ -443,7 +443,7 @@ where
     fn arity(&self) -> usize {
         // [state, char, opt<hash>, opt<v,q for eval claim>, opt<v,q for doc claim>]
 
-        let mut arity = 3;
+        let mut arity = 2;
         match &self.glue[0] {
             GlueOpts::Poly_Hash(_) => {
                 arity += 1;
@@ -503,7 +503,7 @@ where
                 i += 1;
             }
         }
-        assert_eq!(z[i], self.accepting_bool[0]);
+        //    assert_eq!(z[i], self.accepting_bool[0]);
 
         // calc out
         let mut out = vec![
@@ -530,7 +530,7 @@ where
                 out.push(*dv);
             }
         }
-        out.push(self.accepting_bool[1]);
+        //  out.push(self.accepting_bool[1]);
 
         out
     }
@@ -569,7 +569,7 @@ where
         );
 
         let mut last_state = None;
-        let mut accepting = None;
+        //let mut accepting = None;
         let mut out = vec![];
 
         let mut vars = HashMap::with_capacity(self.r1cs.vars.len());
@@ -614,9 +614,10 @@ where
                         if !matched {
                             if s.starts_with(&format!("state_{}", self.batch_size)) {
                                 last_state = Some(alloc_v.clone());
-                            } else if s.starts_with(&format!("accepting")) {
-                                accepting = Some(alloc_v.clone());
-                                println!("accepting {:#?}", accepting.clone().unwrap().get_value());
+                                /*   } else if s.starts_with(&format!("accepting")) {
+                                    accepting = Some(alloc_v.clone());
+                                    println!("accepting {:#?}", accepting.clone().unwrap().get_value());
+                                */
                             }
                         }
                     }
@@ -667,8 +668,9 @@ where
                             if !matched {
                                 if s.starts_with(&format!("state_{}", self.batch_size)) {
                                     last_state = Some(alloc_v.clone());
-                                } else if s.starts_with(&format!("accepting")) {
-                                    accepting = Some(alloc_v.clone());
+                                    /* } else if s.starts_with(&format!("accepting")) {
+                                          accepting = Some(alloc_v.clone());
+                                    */
                                 }
                             }
                         }
@@ -717,8 +719,9 @@ where
                         if !matched {
                             if s.starts_with(&format!("state_{}", self.batch_size)) {
                                 last_state = Some(alloc_v.clone());
-                            } else if s.starts_with(&format!("accepting")) {
-                                accepting = Some(alloc_v.clone());
+                                /*} else if s.starts_with(&format!("accepting")) {
+                                     accepting = Some(alloc_v.clone());
+                                */
                             }
                         }
                     }
@@ -772,8 +775,9 @@ where
                             if !matched {
                                 if s.starts_with(&format!("state_{}", self.batch_size)) {
                                     last_state = Some(alloc_v.clone());
-                                } else if s.starts_with(&format!("accepting")) {
-                                    accepting = Some(alloc_v.clone());
+                                    /* } else if s.starts_with(&format!("accepting")) {
+                                            accepting = Some(alloc_v.clone());
+                                    */
                                 }
                             }
                         }
@@ -789,7 +793,7 @@ where
                 }
             }
         }
-        out.push(accepting.unwrap());
+        //out.push(accepting.unwrap());
 
         for (i, (a, b, c)) in self.r1cs.constraints.iter().enumerate() {
             cs.enforce(
