@@ -1748,8 +1748,9 @@ mod tests {
         let r = Regex::new(&rstr);
         let mut dfa = NFA::new(&ab[..], r);
         let mut d = doc.chars().map(|c| c.to_string()).collect();
-        d =dfa.k_stride(k,&d);
-        println!("DFA Size: {:#?}", dfa.trans.len());
+        d = dfa.k_stride(k, &d);
+        println!("#### DFA Size: {:#?}", dfa.trans.len());
+        println!("#### New doc: {:#?}", d);
 
         //let chars: Vec<String> = d.clone();
         //.chars().map(|c| c.to_string()).collect();
@@ -1757,7 +1758,6 @@ mod tests {
         for s in batch_sizes {
             for b in vec![JBatching::NaivePolys, JBatching::Nlookup] {
                 for c in vec![JCommit::HashChain, JCommit::Nlookup] {
-                    println!("\nNew");
                     //println!("Doc:{:#?}", doc);
                     match b {
                         JBatching::NaivePolys => {}

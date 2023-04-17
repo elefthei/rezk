@@ -198,6 +198,10 @@ impl NFA {
         for (a,b) in ab {
             let mut trans_clos: BTreeSet<(usize, usize)> = BTreeSet::new();
             for t1 in self.get_states() {
+                let tttt: Vec<(String, usize)> = self.trans.clone().into_iter()
+                        .filter_map(|((a,b), c)| if a == t1 { Some((b, c)) } else {None}).collect();
+                println!("Matching {:?} with {:?}: {:?}", t1, a, tttt);
+
                 let t2 = self.delta(t1, &a).unwrap();
                 // Epsilon does not transition
                 let t3 = self.delta(t2, &b).unwrap();
