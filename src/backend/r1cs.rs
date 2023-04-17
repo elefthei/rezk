@@ -1319,7 +1319,7 @@ mod tests {
     type G1 = pasta_curves::pallas::Point;
 
     fn set_up_cfg() {
-        println!("cfg set? {:#?}", cfg::is_cfg_set());
+        //println!("cfg set? {:#?}", cfg::is_cfg_set());
         if !cfg::is_cfg_set() {
             //let m = format!("1019");
             let m = format!(
@@ -1359,10 +1359,10 @@ mod tests {
                         true,
                         None,
                     );
-                    println!(
-                        "coeff {:#?}, con {:#?} @ {:#?}{:#?}{:#?}",
-                        coeff, con, x_1, x_2, x_3
-                    );
+                    // println!(
+                    //     "coeff {:#?}, con {:#?} @ {:#?}{:#?}{:#?}",
+                    //     coeff, con, x_1, x_2, x_3
+                    // );
 
                     if ((x_1 == -1) ^ (x_2 == -1) ^ (x_3 == -1)) & !(x_1 + x_2 + x_3 == -3) {
                         if x_1 == -1 {
@@ -1748,9 +1748,7 @@ mod tests {
         let r = Regex::new(&rstr);
         let mut dfa = NFA::new(&ab[..], r);
         let mut d = doc.chars().map(|c| c.to_string()).collect();
-        for i in 0..k {
-            d = dfa.double_stride(&d);
-        }
+        d =dfa.k_stride(k,&d);
         println!("DFA Size: {:#?}", dfa.trans.len());
 
         //let chars: Vec<String> = d.clone();

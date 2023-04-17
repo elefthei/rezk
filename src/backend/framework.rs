@@ -78,7 +78,7 @@ pub fn gen_commitment(
                 hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
                 sponge.finish(acc).unwrap();
             }
-            println!("commitment = {:#?}", hash.clone());
+            //println!("commitment = {:#?}", hash.clone());
             //self.hash_commitment = Some((start, hash[0]));
 
             return ReefCommitment::HashChain(hash[0]);
@@ -90,7 +90,7 @@ pub fn gen_commitment(
             doc_ext.append(&mut vec![Integer::from(0); doc_ext_len - doc_ext.len()]);
 
             let mut mle = mle_from_pts(doc_ext);
-            println!("mle: {:#?}", mle);
+            //println!("mle: {:#?}", mle);
 
             let gens_t = CommitmentGens::<G1>::new(b"nlookup document commitment", mle.len()); // n is dimension
             let blind = <G1 as Group>::Scalar::random(&mut OsRng);
@@ -211,10 +211,10 @@ pub fn final_clear_checks(
             // or - nlookup commitment check
             match (final_doc_q, final_doc_v) {
                 (Some(q), Some(v)) => {
-                    println!(
-                        "final doc check fixing q,v: {:#?}, {:#?}, dc: {:#?}",
-                        q, v, dc
-                    );
+                    // println!(
+                    //     "final doc check fixing q,v: {:#?}, {:#?}, dc: {:#?}",
+                    //     q, v, dc
+                    // );
 
                     let doc_ext_len = doc.len().next_power_of_two();
 
@@ -452,7 +452,7 @@ pub fn run_backend(
     let mut next_state = 0; //dfa.get init state ??
     let mut prev_hash = <G1 as Group>::Scalar::from(0);
     for i in 0..num_steps {
-        println!("STEP {}", i);
+        //println!("STEP {}", i);
 
         // allocate real witnesses for round i
         (
@@ -518,13 +518,13 @@ pub fn run_backend(
         let glue = match (r1cs_converter.batching, r1cs_converter.commit_type) {
             (JBatching::NaivePolys, JCommit::HashChain) => {
                 let next_hash = r1cs_converter.prover_calc_hash(prev_hash, i);
-                println!("ph, nh: {:#?}, {:#?}", prev_hash.clone(), next_hash.clone());
+                //println!("ph, nh: {:#?}, {:#?}", prev_hash.clone(), next_hash.clone());
                 let g = vec![
                     GlueOpts::Poly_Hash(prev_hash),
                     GlueOpts::Poly_Hash(next_hash),
                 ];
                 prev_hash = next_hash;
-                println!("ph, nh: {:#?}, {:#?}", prev_hash.clone(), next_hash.clone());
+                //println!("ph, nh: {:#?}, {:#?}", prev_hash.clone(), next_hash.clone());
                 g
             }
             (JBatching::Nlookup, JCommit::HashChain) => {
@@ -559,7 +559,7 @@ pub fn run_backend(
             (JBatching::NaivePolys, JCommit::Nlookup) => {
                 let doc_q = match doc_running_q {
                     Some(rq) => rq.into_iter().map(|x| int_to_ff(x)).collect(),
-                    None => vec![<G1 as Group>::Scalar::from(0); q_len],
+                    None => vec![<G1 as Group>::Scalar::from(0); qd_len],
                 };
 
                 let doc_v = match doc_running_v {
@@ -601,7 +601,7 @@ pub fn run_backend(
 
                 let doc_q = match doc_running_q {
                     Some(rq) => rq.into_iter().map(|x| int_to_ff(x)).collect(),
-                    None => vec![<G1 as Group>::Scalar::from(0); q_len],
+                    None => vec![<G1 as Group>::Scalar::from(0); qd_len],
                 };
 
                 let doc_v = match doc_running_v {
@@ -660,7 +660,7 @@ pub fn run_backend(
         //println!("prove step {:#?}", result);
 
         assert!(result.is_ok());
-        println!("RecursiveSNARK::prove_step {}: {:?}", i, result.is_ok());
+        //println!("RecursiveSNARK::prove_step {}: {:?}", i, result.is_ok());
         recursive_snark = Some(result.unwrap());
 
         // for next i+1 round
@@ -776,7 +776,7 @@ pub fn run_backend(
 // calculate multilinear extension from evals of univariate
 // must "pad out" pts to power of 2 !
 fn mle_from_pts(pts: Vec<Integer>) -> Vec<Integer> {
-    println!("mle pts {:#?}", pts);
+    //println!("mle pts {:#?}", pts);
 
     let num_pts = pts.len();
     if num_pts == 1 {
@@ -784,7 +784,7 @@ fn mle_from_pts(pts: Vec<Integer>) -> Vec<Integer> {
     }
 
     let h = num_pts / 2;
-    println!("num_pts {}, h {}", num_pts, h);
+    //println!("num_pts {}, h {}", num_pts, h);
 
     let mut l = mle_from_pts(pts[..h].to_vec());
     let mut r = mle_from_pts(pts[h..].to_vec());
@@ -884,11 +884,11 @@ mod tests {
         // verify
         let num_vars = running_q.len();
 
-        println!("ipa {:#?}", ipa.clone().unwrap());
+        //println!("ipa {:#?}", ipa.clone().unwrap());
         let res = ipa
             .unwrap()
             .verify(&gens_t, &gens_single, num_vars, &ipi, &mut v_transcript);
-        println!("res {:#?}", res);
+        //println!("res {:#?}", res);
 
         // this doesn't pass
         assert!(res.is_ok());
@@ -909,7 +909,7 @@ mod tests {
         ];
 
         let mle = mle_from_pts(uni.clone());
-        println!("mle coeffs: {:#?}", mle);
+        //println!("mle coeffs: {:#?}", mle);
 
         // 011 = 6
         //let q = vec![Integer::from(0), Integer::from(1), Integer::from(1)];
@@ -926,7 +926,7 @@ mod tests {
 
         let q_ext = q_to_mle_q(&q, mle_f.len());
 
-        println!("q_ext: {:#?}", q_ext);
+        //println!("q_ext: {:#?}", q_ext);
 
         assert_eq!(mle_f.len(), q_ext.len());
         // inner product

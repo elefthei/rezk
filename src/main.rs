@@ -38,7 +38,7 @@ fn main() {
         None => ()
     }
 
-    println!("dfa: {:#?}", nfa);
+    //println!("dfa: {:#?}", nfa);
 
 
     #[cfg(feature = "plot")]
