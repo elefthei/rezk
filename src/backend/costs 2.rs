@@ -18,25 +18,17 @@ pub enum JCommit {
     Nlookup,
 }
 
-pub fn logmn(mn: usize) -> usize {
-    match mn {
-        1 => 1,
-        _ => (mn as f32).log2().ceil() as usize,
-    }
-}
-
-pub fn accepting_circuit<'a>(dfa: &'a NFA, is_match: Option<(usize, usize)>) -> usize {
+fn accepting_circuit<'a>(dfa: &'a NFA, is_match: Option<(usize, usize)>) -> usize {
     // vanishing selection for final check
     // poly of degree (# final states - 1)
     // (alt, # non final states - 1)
-    let cost: usize = 2; //constrain to boolean costs
     match is_match {
-        None => cost + dfa.get_non_final_states().len() as usize - 1,
-        _ => cost + dfa.get_final_states().len() as usize - 1,
+        None => dfa.get_non_final_states().len() as usize - 1,
+        _ => dfa.get_final_states().len() as usize - 1,
     }
 }
 
-pub fn commit_circuit_nohash(
+fn commit_circuit_nohash(
     doc_len: usize,
     batch_size: usize,
     commit_type: JCommit,
@@ -50,22 +42,17 @@ pub fn commit_circuit_nohash(
         },
         JCommit::Nlookup => {
             let mn: usize = doc_len;
-            //println!("Doc Len: {:#?}", mn);
-            let log_mn: usize = logmn(mn);
-            //println!("Log mn: {:#?}", log_mn);
+            let log_mn: usize = (mn as f32).log2().ceil() as usize;
             let mut cost: usize = 0;
 
             //Multiplications
             cost += batch_size + 1;
 
             //Sum-check additions
-            cost += log_mn * 2;
+            cost += log_mn * 4;
 
             //eq calc
-            cost += (batch_size + 1) * (2 * log_mn); //2 actual multiplication and 2 for the subtraction
-
-            //combine eqs
-            cost += (batch_size + 1) * (log_mn - 1);
+            cost += (batch_size + 1) * (4 * log_mn); //2 actual multiplication and 2 for the subtraction
 
             //horners
             cost += batch_size + 1;
@@ -92,7 +79,7 @@ fn commit_circuit_hash(
         },
         JCommit::Nlookup => {
             let mn: usize = doc_len;
-            let log_mn: usize = logmn(mn);
+            let log_mn: usize = (mn as f32).log2().ceil() as usize;
             let mut cost = 0;
 
             //Sum check poseidon hashes
@@ -113,7 +100,7 @@ pub fn naive_cost_model_nohash<'a>(
     commit_type: JCommit,
 ) -> usize {
     // vanishing poly - m * n multiplications + 2 for lookup
-    let mut cost = dfa.trans.len() - 1;
+    let mut cost = dfa.trans.len() + 2;
     cost *= batch_size;
 
     cost += accepting_circuit(dfa, is_match);
@@ -159,20 +146,17 @@ pub fn nlookup_cost_model_nohash<'a>(
     commit_type: JCommit,
 ) -> usize {
     let mn: usize = dfa.trans.len();
-    let log_mn: usize = logmn(mn);
+    let log_mn: usize = (mn as f32).log2().ceil() as usize;
     let mut cost: usize = 0;
 
     //Multiplications
     cost += batch_size + 1;
 
     //Sum-check additions
-    cost += log_mn * 2;
+    cost += log_mn * 4;
 
     //eq calc
-    cost += (batch_size + 1) * (2 * log_mn);
-
-    //combine eqs
-    cost += (batch_size + 1) * (log_mn - 1);
+    cost += (batch_size + 1) * (4 * log_mn);
 
     //horners
     cost += batch_size + 1;
@@ -180,9 +164,8 @@ pub fn nlookup_cost_model_nohash<'a>(
     //mult by Tj
     cost += 1;
 
-    // //v_i creation
-    // cost += batch_size;
-    //(batch_size * 3)+1; // * 3???
+    //v_i creation
+    cost += (batch_size * 3)+1; // * 3???
 
     cost += accepting_circuit(dfa, is_match);
 
@@ -199,7 +182,7 @@ pub fn nlookup_cost_model_hash<'a>(
     commit_type: JCommit,
 ) -> usize {
     let mn: usize = dfa.trans.len();
-    let log_mn: usize = logmn(mn);
+    let log_mn: usize = (mn as f32).log2().ceil() as usize;
     let mut cost = nlookup_cost_model_nohash(dfa, batch_size, is_match, doc_len, commit_type);
 
     //Sum check poseidon hashes
@@ -419,7 +402,7 @@ pub fn opt_cost_model_select<'a>(
     doc_length: usize,
     commit: Option<JCommit>,
     batching: Option<JBatching>,
-) -> (JBatching, JCommit, usize) {
+) -> (JBatching, JCommit,usize) {
     let mut opt_batching: JBatching = match batching {
         None => JBatching::NaivePolys,
         Some(b) => b,
