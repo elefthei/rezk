@@ -118,7 +118,7 @@ impl<'a, F: PrimeField> NFAStepCircuit<'a, F> {
     ) -> Self {
         // todo check wits line up with the non det advice
 
-        println!("ACCEPTING VEC {:#?}", accepting_bool);
+        //println!("ACCEPTING VEC {:#?}", accepting_bool);
         assert_eq!(chars.len(), 2); // only need in/out for all of these
         assert_eq!(states.len(), 2);
         assert_eq!(glue.len(), 2);
@@ -630,7 +630,7 @@ where
             }
             GlueOpts::Nl_Hash((h, q, v)) => {
                 let sc_l = q.len();
-                println!("glue1 q, v: {:#?}, {:#?}", q, v);
+                //println!("glue1 q, v: {:#?}, {:#?}", q, v);
                 alloc_rc = vec![None; sc_l + 1];
 
                 for (i, var) in self.r1cs.vars.iter().copied().enumerate() {
@@ -643,7 +643,7 @@ where
                             ff_val
                         })
                     };
-                    println!("Var (name?) {:#?}", self.r1cs.names[&var]);
+                    //println!("Var (name?) {:#?}", self.r1cs.names[&var]);
 
                     let mut matched = self
                         .input_variable_parsing(

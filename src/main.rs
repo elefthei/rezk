@@ -40,7 +40,7 @@ fn main() {
     // Is document well-formed
     nfa.well_formed(&doc);
 
-    println!("dfa: {:#?}", nfa);
+    //println!("dfa: {:#?}", nfa);
 
 
     #[cfg(feature = "plot")]

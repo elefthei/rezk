@@ -1321,7 +1321,7 @@ mod tests {
     type G1 = pasta_curves::pallas::Point;
 
     fn set_up_cfg() {
-        println!("cfg set? {:#?}", cfg::is_cfg_set());
+        //println!("cfg set? {:#?}", cfg::is_cfg_set());
         if !cfg::is_cfg_set() {
             //let m = format!("1019");
             let m = format!(
@@ -1361,10 +1361,10 @@ mod tests {
                         true,
                         None,
                     );
-                    println!(
-                        "coeff {:#?}, con {:#?} @ {:#?}{:#?}{:#?}",
-                        coeff, con, x_1, x_2, x_3
-                    );
+                    // println!(
+                    //     "coeff {:#?}, con {:#?} @ {:#?}{:#?}{:#?}",
+                    //     coeff, con, x_1, x_2, x_3
+                    // );
 
                     if ((x_1 == -1) ^ (x_2 == -1) ^ (x_3 == -1)) & !(x_1 + x_2 + x_3 == -3) {
                         if x_1 == -1 {
@@ -1740,6 +1740,7 @@ mod tests {
         );
     }
 
+
     #[test]
     fn big() {
         init();
@@ -1751,5 +1752,69 @@ mod tests {
             vec![1],
             true,
         );
+
+    fn test_func_no_hash_kstride(
+        ab: String,
+        rstr: String,
+        doc: String,
+        batch_sizes: Vec<usize>,
+        k: usize
+    ) {
+        let r = Regex::new(&rstr);
+        let mut dfa = NFA::new(&ab[..], r);
+        let mut d = doc.chars().map(|c| c.to_string()).collect();
+        d = dfa.k_stride(k, &d);
+        println!("#### DFA Size: {:#?}", dfa.trans.len());
+        println!("#### New doc: {:#?}", d);
+
+        //let chars: Vec<String> = d.clone();
+        //.chars().map(|c| c.to_string()).collect();
+
+        for s in batch_sizes {
+            for b in vec![JBatching::NaivePolys, JBatching::Nlookup] {
+                for c in vec![JCommit::HashChain, JCommit::Nlookup] {
+                    //println!("Doc:{:#?}", doc);
+                    match b {
+                        JBatching::NaivePolys => {}
+                        JBatching::Nlookup => {}
+                        } //JBatching::Plookup => todo!(),
+                    match c {
+                        JCommit::HashChain => {}
+                        JCommit::Nlookup => {} //JBatching::Plookup => todo!(),
+                    } // TODO make batch size 1 work at some point, you know for nice figs
+
+                    println!("Batching {:#?}",b.clone());
+                    println!("Commit {:#?}",c);
+                    println!(
+                        "cost model: {:#?}",
+                        costs::full_round_cost_model_nohash(
+                            &dfa,
+                            s,
+                            b.clone(),
+                            dfa.is_match(&d),
+                            d.len(),
+                            c,
+                        )
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn k_stride() {
+        init();
+        let preamble: String = "we the people in order to form a more perfect union, establish justic ensure domestic tranquility, provide for the common defense, promote the general welfare and procure the blessings of liberty to ourselves and our posterity do ordain and establish this ".to_string();
+        let ab = " ,abcdefghijlmnopqrstuvwy".to_string();
+        for i in 0..9 {
+            println!("K:{:#?}", i);
+            test_func_no_hash_kstride(
+                ab.clone(),
+                "^hello.*$".to_string(),
+                preamble.clone(),
+                vec![1],
+                i,
+            );
+        }
     }
 }
