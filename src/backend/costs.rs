@@ -73,6 +73,9 @@ pub fn commit_circuit_nohash(
             //mult by Tj
             cost += 1;
 
+            // combine qs (for fiat shamir)
+            cost += 1;
+
             cost
         }
     }
@@ -180,9 +183,11 @@ pub fn nlookup_cost_model_nohash<'a>(
     //mult by Tj
     cost += 1;
 
-    // //v_i creation
-    // cost += batch_size;
-    //(batch_size * 3)+1; // * 3???
+    //v_i creation (for fiat shamir)
+    cost += batch_size;
+
+    // combine qs (for fiat shamir)
+    cost += 1;
 
     cost += accepting_circuit(dfa, is_match);
 
@@ -439,7 +444,7 @@ pub fn opt_cost_model_select<'a>(
     let mut opt_batch_size: usize = 1;
     let mut cost = full_round_cost_model(
         dfa,
-        2 << batch_range_lower,
+        opt_batch_size,
         opt_batching,
         is_match,
         doc_length,

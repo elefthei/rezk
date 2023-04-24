@@ -3,6 +3,7 @@ use crate::dfa::NFA;
 use circ::cfg;
 use circ::cfg::CircOpt;
 use circ::cfg::*;
+use crate::config::*;
 use circ::ir::{opt::*, proof::Constraints, term::*};
 use circ::target::r1cs::{opt::reduce_linearities, trans::to_r1cs, ProverData, VerifierData};
 use ff::PrimeField;
@@ -14,6 +15,7 @@ use neptune::{
     sponge::vanilla::{Mode, Sponge, SpongeTrait},
     Strength,
 };
+use std::fs;
 use nova_snark::traits::Group;
 use rug::{
     integer::Order,
@@ -343,15 +345,12 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
     pub fn new(
         dfa: &'a NFA,
         doc: &Vec<String>,
-        start_at: usize,
-        length_at: usize,
         batch_size: usize,
         pcs: PoseidonConstants<F, typenum::U2>,
         batch_override: Option<JBatching>,
         commit_override: Option<JCommit>,
     ) -> Self {
-        let dfa_match = dfa.is_match(doc, start_at, length_at);
-        let is_match = dfa_match.is_some();
+        let is_match = dfa.is_match(doc).is_some();
 
         println!("Match? {:#?}", is_match);
         let batching;
@@ -361,26 +360,26 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
             (batching, commit, opt_batch_size) = match (batch_override, commit_override) {
                 (Some(b), Some(c)) => (b, c, batch_size),
                 (Some(b), _) => {
-                    opt_commit_select_with_batch(dfa, batch_size, dfa_match, length_at, b)
+                    opt_commit_select_with_batch(dfa, batch_size, dfa.is_match(doc), doc.len(), b)
                 }
                 (None, Some(c)) => opt_cost_model_select_with_commit(
                     &dfa,
                     batch_size,
-                    dfa.is_match(doc, start_at, length_at),
-                    length_at,
+                    dfa.is_match(doc),
+                    doc.len(),
                     c,
                 ),
                 (None, None) => {
-                    opt_cost_model_select_with_batch(&dfa, batch_size, dfa_match, length_at)
+                    opt_cost_model_select_with_batch(&dfa, batch_size, dfa.is_match(doc), doc.len())
                 }
             };
         } else {
             (batching, commit, opt_batch_size) = opt_cost_model_select(
                 &dfa,
-                1,
+                0,
+                logmn(doc.len()),
+                dfa.is_match(doc),
                 doc.len(),
-                dfa.is_match(doc, start_at, length_at),
-                length_at,
                 commit_override,
                 batch_override,
             );
@@ -394,10 +393,10 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
             batching, commit, sel_batch_size
         );
 
-        println!("substring pre {:#?}", dfa_match);
+        println!("substring pre {:#?}", dfa.is_match(doc));
 
         let mut substring = (0, doc.len());
-        match dfa_match {
+        match dfa.is_match(doc) {
             Some((start, end)) => {
                 match commit {
                     JCommit::HashChain => {
@@ -516,7 +515,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
             }
         }
 
-        println!("ACCEPTING CHECK: state: {:#?} accepting? {:#?}", state, out);
+        // println!("ACCEPTING CHECK: state: {:#?} accepting? {:#?}", state, out);
 
         // sanity
         if (batch_num + 1) * self.batch_size >= self.doc.len() {
@@ -1322,7 +1321,7 @@ mod tests {
     type G1 = pasta_curves::pallas::Point;
 
     fn set_up_cfg() {
-        println!("cfg set? {:#?}", cfg::is_cfg_set());
+        //println!("cfg set? {:#?}", cfg::is_cfg_set());
         if !cfg::is_cfg_set() {
             //let m = format!("1019");
             let m = format!(
@@ -1362,10 +1361,10 @@ mod tests {
                         true,
                         None,
                     );
-                    println!(
-                        "coeff {:#?}, con {:#?} @ {:#?}{:#?}{:#?}",
-                        coeff, con, x_1, x_2, x_3
-                    );
+                    // println!(
+                    //     "coeff {:#?}, con {:#?} @ {:#?}{:#?}{:#?}",
+                    //     coeff, con, x_1, x_2, x_3
+                    // );
 
                     if ((x_1 == -1) ^ (x_2 == -1) ^ (x_3 == -1)) & !(x_1 + x_2 + x_3 == -3) {
                         if x_1 == -1 {
@@ -1496,8 +1495,6 @@ mod tests {
                     let mut r1cs_converter = R1CS::new(
                         &dfa,
                         &doc.chars().map(|c| c.to_string()).collect(),
-                        0,
-                        doc.len(),
                         s,
                         sc,
                         Some(b.clone()),
@@ -1570,7 +1567,7 @@ mod tests {
                             &dfa,
                             s,
                             b.clone(),
-                            dfa.is_whole_match(&chars),
+                            dfa.is_match(&chars),
                             doc.len(),
                             c,
                         )
@@ -1582,7 +1579,7 @@ mod tests {
                                 &dfa,
                                 s,
                                 b.clone(),
-                                dfa.is_whole_match(&chars),
+                                dfa.is_match(&chars),
                                 doc.len(),
                                 c
                             )
@@ -1656,7 +1653,7 @@ mod tests {
         );
     }
 
-    #[test]
+    // #[test]
     fn dfa_non_match() {
         init();
         // TODO make sure match/non match is expected
@@ -1741,5 +1738,91 @@ mod tests {
             vec![1, 5],
             false,
         );
+    }
+
+
+    #[test]
+    fn big() {
+        init();
+        let ASCIIchars: Vec<char> = (0..128).filter_map(std::char::from_u32).collect();
+        test_func_no_hash(
+            ASCIIchars.into_iter().collect::<String>(),
+            "^.*our technology.*$".to_string(),
+            fs::read_to_string("gov_text.txt").unwrap(),
+            vec![1],
+            true,
+        );
+    }
+
+    fn test_func_no_hash_kstride(
+        ab: String,
+        rstr: String,
+        doc: String,
+        batch_sizes: Vec<usize>,
+        k: usize
+    ) {
+        let r = Regex::new(&rstr);
+        let mut dfa = NFA::new(&ab[..], r);
+        let mut d = doc.chars().map(|c| c.to_string()).collect();
+        d = dfa.k_stride(k, &d);
+        println!("#### DFA Size: {:#?}", dfa.trans.len());
+        println!("#### New doc: {:#?}", d);
+
+        //let chars: Vec<String> = d.clone();
+        //.chars().map(|c| c.to_string()).collect();
+
+        for s in batch_sizes {
+            for b in vec![JBatching::NaivePolys, JBatching::Nlookup] {
+                for c in vec![JCommit::HashChain, JCommit::Nlookup] {
+                    println!("Batching {:#?}",b.clone());
+                    println!("Commit {:#?}",c);
+                    println!(
+                        "cost model: {:#?}",
+                        costs::full_round_cost_model_nohash(
+                            &dfa,
+                            s,
+                            b.clone(),
+                            dfa.is_match(&d),
+                            d.len(),
+                            c,
+                        )
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn k_stride2() {
+        init();
+        let preamble: String = "ffffabcdffffabcd".to_string();
+        let ab = "abcdef".to_string();
+        for i in 0..9 {
+            println!("K:{:#?}", i);
+            test_func_no_hash_kstride(
+                ab.clone(),
+                "^hello.*$".to_string(),
+                preamble.clone(),
+                vec![1],
+                i,
+            );
+        }
+    }
+
+    #[test]
+    fn k_stride() {
+        init();
+        let preamble: String = "we the people in order to form a more perfect union, establish justic ensure domestic tranquility, provide for the common defense, promote the general welfare and procure the blessings of liberty to ourselves and our posterity do ordain and establish this ".to_string();
+        let ab = " ,abcdefghijlmnopqrstuvwy".to_string();
+        for i in 0..9 {
+            println!("K:{:#?}", i);
+            test_func_no_hash_kstride(
+                ab.clone(),
+                "^.*order.to.*$".to_string(),
+                preamble.clone(),
+                vec![1],
+                i,
+            );
+        }
     }
 }
