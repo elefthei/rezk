@@ -389,11 +389,11 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
 
         let sel_batch_size = opt_batch_size;
 
-        assert!(sel_batch_size >= 1);
-        println!(
-            "batch type: {:#?}, commit type: {:#?}, batch_size {:#?}, cost {:#?}",
-            batching, commit, sel_batch_size, cost
-        );
+        // assert!(sel_batch_size >= 1);
+        // println!(
+        //     "batch type: {:#?}, commit type: {:#?}, batch_size {:#?}, cost {:#?}",
+        //     batching, commit, sel_batch_size, cost
+        // );
 
         println!("substring pre {:#?}", is_match);
 
