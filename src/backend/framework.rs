@@ -77,7 +77,6 @@ pub fn gen_commitment(
                 hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
                 sponge.finish(acc).unwrap();
             }
-            println!("commitment = {:#?}", hash.clone());
             //self.hash_commitment = Some((start, hash[0]));
 
             return ReefCommitment::HashChain(hash[0]);
@@ -89,7 +88,6 @@ pub fn gen_commitment(
             doc_ext.append(&mut vec![Integer::from(0); doc_ext_len - doc_ext.len()]);
 
             let mut mle = mle_from_pts(doc_ext);
-            println!("mle: {:#?}", mle);
 
             let gens_t = CommitmentGens::<G1>::new(b"nlookup document commitment", mle.len()); // n is dimension
             let blind = <G1 as Group>::Scalar::random(&mut OsRng);
@@ -210,11 +208,6 @@ pub fn final_clear_checks(
             // or - nlookup commitment check
             match (final_doc_q, final_doc_v) {
                 (Some(q), Some(v)) => {
-                    println!(
-                        "final doc check fixing q,v: {:#?}, {:#?}, dc: {:#?}",
-                        q, v, dc
-                    );
-
                     let doc_ext_len = doc.len().next_power_of_two();
 
                     // right form for inner product
@@ -473,12 +466,6 @@ pub fn run_backend(
             doc_running_q.clone(),
             doc_running_v.clone(),
         );
-        //println!("prover_data {:#?}", prover_data.clone());
-        //println!("wits {:#?}", wits.clone());
-        //let extended_wit = prover_data.precomp.eval(&wits);
-        //println!("extended wit {:#?}", extended_wit);
-
-        //prover_data.check_all(&extended_wit);
 
         prover_data.check_all(&wits);
 
@@ -487,7 +474,6 @@ pub fn run_backend(
         if i + 1 < num_steps {
             next_char = doc[(i + 1) * r1cs_converter.batch_size].clone();
         };
-        //println!("next char = {}", next_char);
 
         // todo put this in r1cs
         let mut next_hash = <G1 as Group>::Scalar::from(0);
@@ -522,13 +508,11 @@ pub fn run_backend(
         let glue = match (r1cs_converter.batching, r1cs_converter.commit_type) {
             (JBatching::NaivePolys, JCommit::HashChain) => {
                 let next_hash = r1cs_converter.prover_calc_hash(prev_hash, i);
-                println!("ph, nh: {:#?}, {:#?}", prev_hash.clone(), next_hash.clone());
                 let g = vec![
                     GlueOpts::Poly_Hash(prev_hash),
                     GlueOpts::Poly_Hash(next_hash),
                 ];
                 prev_hash = next_hash;
-                println!("ph, nh: {:#?}, {:#?}", prev_hash.clone(), next_hash.clone());
                 g
             }
             (JBatching::Nlookup, JCommit::HashChain) => {
@@ -653,8 +637,6 @@ pub fn run_backend(
         
         duration = w_time.elapsed().as_millis();
         println!("Witness generation time : {:?}",duration);
-        //println!("STEP CIRC WIT for i={}: {:#?}", i, circuit_primary);
-        // snark
 
         let p_time: Instant = Instant::now();
         let result = RecursiveSNARK::prove_step(
@@ -665,10 +647,8 @@ pub fn run_backend(
             z0_primary.clone(),
             z0_secondary.clone(),
         );
-        //println!("prove step {:#?}", result);
 
         assert!(result.is_ok());
-        println!("RecursiveSNARK::prove_step {}: {:?}", i, result.is_ok());
         recursive_snark = Some(result.unwrap());
 
         duration = p_time.elapsed().as_millis();
@@ -692,7 +672,6 @@ pub fn run_backend(
         z0_primary.clone(),
         z0_secondary.clone(),
     );
-    println!("Recursive res: {:#?}", res);
 
     assert!(res.is_ok()); // TODO delete
 
@@ -708,7 +687,7 @@ pub fn run_backend(
     let compressed_snark = res.unwrap();
     
     duration = compression_time.elapsed().as_millis();
-    println!("SNAKE compression time : {:?}",duration);
+    println!("SNARK compression time : {:?}",duration);
 
     // VERIFIER verify compressed snark
     let n_time = Instant::now();
@@ -796,7 +775,6 @@ fn mle_from_pts(pts: Vec<Integer>) -> Vec<Integer> {
     }
 
     let h = num_pts / 2;
-    println!("num_pts {}, h {}", num_pts, h);
 
     let mut l = mle_from_pts(pts[..h].to_vec());
     let mut r = mle_from_pts(pts[h..].to_vec());
@@ -896,11 +874,9 @@ mod tests {
         // verify
         let num_vars = running_q.len();
 
-        println!("ipa {:#?}", ipa.clone().unwrap());
         let res = ipa
             .unwrap()
             .verify(&gens_t, &gens_single, num_vars, &ipi, &mut v_transcript);
-        println!("res {:#?}", res);
 
         // this doesn't pass
         assert!(res.is_ok());
@@ -921,7 +897,6 @@ mod tests {
         ];
 
         let mle = mle_from_pts(uni.clone());
-        println!("mle coeffs: {:#?}", mle);
 
         // 011 = 6
         //let q = vec![Integer::from(0), Integer::from(1), Integer::from(1)];
@@ -937,8 +912,6 @@ mod tests {
         }
 
         let q_ext = q_to_mle_q(&q, mle_f.len());
-
-        println!("q_ext: {:#?}", q_ext);
 
         assert_eq!(mle_f.len(), q_ext.len());
         // inner product

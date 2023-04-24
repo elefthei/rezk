@@ -128,7 +128,6 @@ impl NFA {
         } else {
             self.trans.get(&(state, c.clone())).map(|c|c.clone())
         };
-        // println!("{} --[ {} ]--> {}", state, c, res.map(|c|c.to_string()).unwrap_or(String::from("NONE")));
         res
     }
 

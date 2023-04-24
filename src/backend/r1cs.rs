@@ -395,7 +395,6 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         //     batching, commit, sel_batch_size, cost
         // );
 
-        println!("substring pre {:#?}", is_match);
 
         let mut substring = (0, doc.len());
         match is_match {
@@ -517,7 +516,6 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
             }
         }
 
-        println!("ACCEPTING CHECK: state: {:#?} accepting? {:#?}", state, out);
 
         // sanity
         if (batch_num + 1) * self.batch_size >= self.doc.len() {
@@ -1268,8 +1266,6 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         query.append(&mut vec![prev_running_v.clone()]);
         let query_f: Vec<F> = query.into_iter().map(|i| int_to_ff(i)).collect();
 
-        println!("R1CS sponge absorbs {:#?}", query_f);
-
         SpongeAPI::absorb(
             &mut sponge,
             (self.batch_size + sc_l + 2) as u32,
@@ -1281,7 +1277,6 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
 
         // generate claim r
         let rand = SpongeAPI::squeeze(&mut sponge, 1, acc);
-        println!("R1CS sponge squeezes {:#?}", rand);
         let claim_r = Integer::from_digits(rand[0].to_repr().as_ref(), Order::Lsf); // TODO?
         wits.insert(format!("{}_claim_r", id), new_wit(claim_r.clone()));
 
@@ -1311,10 +1306,8 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
                 int_to_ff(g_xsq.clone()),
             ];
 
-            println!("R1CS sponge absorbs {:#?}", query);
             SpongeAPI::absorb(&mut sponge, 3, &query, acc);
             let rand = SpongeAPI::squeeze(&mut sponge, 1, acc);
-            println!("R1CS sponge squeezes {:#?}", rand);
             let sc_r = Integer::from_digits(rand[0].to_repr().as_ref(), Order::Lsf); // TODO?
 
             sc_rs.push(sc_r.clone());
@@ -1426,7 +1419,6 @@ mod tests {
     type G1 = pasta_curves::pallas::Point;
 
     fn set_up_cfg() {
-        println!("cfg set? {:#?}", cfg::is_cfg_set());
         if !cfg::is_cfg_set() {
             //let m = format!("1019");
             let m = format!(
@@ -1465,10 +1457,6 @@ mod tests {
                         &(0..table.len()).collect(),
                         true,
                         None,
-                    );
-                    println!(
-                        "coeff {:#?}, con {:#?} @ {:#?}{:#?}{:#?}",
-                        coeff, con, x_1, x_2, x_3
                     );
 
                     if ((x_1 == -1) ^ (x_2 == -1) ^ (x_3 == -1)) & !(x_1 + x_2 + x_3 == -3) {
@@ -1609,7 +1597,7 @@ mod tests {
                         Some(c.clone()),
                     );
                     d = t.elapsed();
-                    println!("R1CW new {:#?}", d);
+                    println!("R1CS new {:#?}", d);
 
                     assert_eq!(expected_match, r1cs_converter.is_match);
 

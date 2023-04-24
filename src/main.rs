@@ -43,9 +43,6 @@ fn main() {
     let mut duration = dfaCompileTime.elapsed().as_millis();
     println!("DFA compile time : {:?}",duration);
 
-    println!("dfa: {:#?}", nfa);
-
-
     #[cfg(feature = "plot")]
     plot::plot_nfa(&nfa).expect("Failed to plot DFA to a pdf file");
 
@@ -61,5 +58,4 @@ fn main() {
     
     duration = total_time.elapsed().as_millis();
     println!("E2E time: {:?}",duration);
-    //println!("parse_ms {:#?}, commit_ms {:#?}, r1cs_ms {:#?}, setup_ms {:#?}, precomp_ms {:#?}, nova_ms {:#?},",parse_ms, commit_ms, r1cs_ms, setup_ms, precomp_ms, nova_ms);
 }

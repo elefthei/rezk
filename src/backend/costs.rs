@@ -50,9 +50,7 @@ pub fn commit_circuit_nohash(
         },
         JCommit::Nlookup => {
             let mn: usize = doc_len;
-            println!("Doc Len: {:#?}", mn);
             let log_mn: usize = logmn(mn);
-            println!("Log mn: {:#?}", log_mn);
             let mut cost: usize = 0;
 
             //Multiplications
