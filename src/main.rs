@@ -17,7 +17,8 @@ use crate::dfa::NFA;
 pub mod plot;
 
 fn main() {
-    let p_time = Instant::now();
+    let total_time = Instant::now();
+    let dfaCompileTime = Instant::now();
     let opt = Options::parse();
 
     // Alphabet
@@ -39,6 +40,8 @@ fn main() {
     }
     // Is document well-formed
     nfa.well_formed(&doc);
+    let mut duration = dfaCompileTime.elapsed().as_millis();
+    println!("DFA compile time : {:?}",duration);
 
     println!("dfa: {:#?}", nfa);
 
@@ -48,10 +51,15 @@ fn main() {
 
     let num_steps = doc.len();
     println!("Doc len is {}", num_steps);
+    let DFASolveTime = Instant::now();
     println!("Match: {}", nfa.is_match(&doc).map(|c| format!("{:?}", c)).unwrap_or(String::from("NONE")));
     init();
+    duration = DFASolveTime.elapsed().as_millis();
+    println!("DFA solve time : {:?}",duration);
 
     run_backend(&nfa, &doc, opt.eval_type, opt.commit_type, opt.batch_size); // auto select batching/commit
-
+    
+    duration = total_time.elapsed().as_millis();
+    println!("E2E time: {:?}",duration);
     //println!("parse_ms {:#?}, commit_ms {:#?}, r1cs_ms {:#?}, setup_ms {:#?}, precomp_ms {:#?}, nova_ms {:#?},",parse_ms, commit_ms, r1cs_ms, setup_ms, precomp_ms, nova_ms);
 }

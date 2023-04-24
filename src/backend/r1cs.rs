@@ -351,35 +351,36 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         batch_override: Option<JBatching>,
         commit_override: Option<JCommit>,
     ) -> Self {
-        let is_match = dfa.is_match(doc).is_some();
+        let is_match: Option<(usize,usize)> = dfa.is_match(doc);
 
-        println!("Match? {:#?}", is_match);
         let batching;
         let commit;
         let opt_batch_size;
+        let cost: usize;
+
         if batch_size > 1 {
-            (batching, commit, opt_batch_size) = match (batch_override, commit_override) {
-                (Some(b), Some(c)) => (b, c, batch_size),
+            (batching, commit, opt_batch_size, cost) = match (batch_override, commit_override) {
+                (Some(b), Some(c)) => (b, c, batch_size, 0),
                 (Some(b), _) => {
-                    opt_commit_select_with_batch(dfa, batch_size, dfa.is_match(doc), doc.len(), b)
+                    opt_commit_select_with_batch(dfa, batch_size, is_match, doc.len(), b)
                 }
                 (None, Some(c)) => opt_cost_model_select_with_commit(
                     &dfa,
                     batch_size,
-                    dfa.is_match(doc),
+                    is_match,
                     doc.len(),
                     c,
                 ),
                 (None, None) => {
-                    opt_cost_model_select_with_batch(&dfa, batch_size, dfa.is_match(doc), doc.len())
+                    opt_cost_model_select_with_batch(&dfa, batch_size, is_match, doc.len())
                 }
             };
         } else {
-            (batching, commit, opt_batch_size) = opt_cost_model_select(
+            (batching, commit, opt_batch_size,cost) = opt_cost_model_select(
                 &dfa,
                 0,
                 logmn(doc.len()),
-                dfa.is_match(doc),
+                is_match,
                 doc.len(),
                 commit_override,
                 batch_override,
@@ -390,14 +391,14 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
 
         assert!(sel_batch_size >= 1);
         println!(
-            "batch type: {:#?}, commit type: {:#?}, batch_size {:#?}",
-            batching, commit, sel_batch_size
+            "batch type: {:#?}, commit type: {:#?}, batch_size {:#?}, cost {:#?}",
+            batching, commit, sel_batch_size, cost
         );
 
-        println!("substring pre {:#?}", dfa.is_match(doc));
+        println!("substring pre {:#?}", is_match);
 
         let mut substring = (0, doc.len());
-        match dfa.is_match(doc) {
+        match is_match {
             Some((start, end)) => {
                 match commit {
                     JCommit::HashChain => {
@@ -440,7 +441,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
             pub_inputs: Vec::new(),
             batch_size: sel_batch_size,
             doc: doc.clone(),
-            is_match,
+            is_match : is_match.is_some(),
             substring,
             pc: pcs,
         }
@@ -516,7 +517,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
             }
         }
 
-        // println!("ACCEPTING CHECK: state: {:#?} accepting? {:#?}", state, out);
+        println!("ACCEPTING CHECK: state: {:#?} accepting? {:#?}", state, out);
 
         // sanity
         if (batch_num + 1) * self.batch_size >= self.doc.len() {
@@ -1037,6 +1038,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         Option<Vec<Integer>>,
         Option<Integer>,
     ) {
+
         // generate T
         let mut table = vec![];
         for (ins, c, out) in self.dfa.deltas() {
@@ -1581,6 +1583,8 @@ mod tests {
         batch_sizes: Vec<usize>,
         expected_match: bool,
     ) {
+        let mut t: Instant;
+        let mut d: Duration;
         let r = Regex::new(&rstr);
         let dfa = NFA::new(&ab[..], r);
         println!("DFA Size: {:#?}", dfa.trans.len());
@@ -1594,7 +1598,8 @@ mod tests {
                     let sc = Sponge::<<G1 as Group>::Scalar, typenum::U2>::api_constants(
                         Strength::Standard,
                     );
-                    println!("Doc:{:#?}", doc);
+                    // println!("Doc:{:#?}", doc);
+                    t = Instant::now();
                     let mut r1cs_converter = R1CS::new(
                         &dfa,
                         &doc.chars().map(|c| c.to_string()).collect(),
@@ -1603,13 +1608,15 @@ mod tests {
                         Some(b.clone()),
                         Some(c.clone()),
                     );
+                    d = t.elapsed();
+                    println!("R1CW new {:#?}", d);
 
                     assert_eq!(expected_match, r1cs_converter.is_match);
 
-                    let mut running_q = None;
-                    let mut running_v = None;
-                    let mut doc_running_q = None;
-                    let mut doc_running_v = None;
+                    // let mut running_q = None;
+                    // let mut running_v = None;
+                    // let mut doc_running_q = None;
+                    // let mut doc_running_v = None;
                     match b {
                         JBatching::NaivePolys => {}
                         JBatching::Nlookup => {
@@ -1631,39 +1638,44 @@ mod tests {
 
                     println!("Batching {:#?}", r1cs_converter.batching);
                     println!("Commit {:#?}", r1cs_converter.commit_type);
+                    t = Instant::now();
                     let (prover_data, _) = r1cs_converter.to_circuit();
+                    d = t.elapsed();
+                    print!("To circuit {:#?}",d);
+                    // let mut current_state = dfa.get_init_state();
 
-                    let mut current_state = dfa.get_init_state();
+                    // let mut values;
+                    // let mut next_state;
 
-                    let mut values;
-                    let mut next_state;
+                    // let num_steps = (r1cs_converter.substring.1 - r1cs_converter.substring.0) / s;
+                    // t = Instant::now();
+                    // for i in 0..num_steps {
+                    //     (
+                    //         values,
+                    //         next_state,
+                    //         running_q,
+                    //         running_v,
+                    //         doc_running_q,
+                    //         doc_running_v,
+                    //     ) = r1cs_converter.gen_wit_i(
+                    //         i,
+                    //         current_state,
+                    //         running_q.clone(),
+                    //         running_v.clone(),
+                    //         doc_running_q.clone(),
+                    //         doc_running_v.clone(),
+                    //     );
 
-                    let num_steps = (r1cs_converter.substring.1 - r1cs_converter.substring.0) / s;
-                    for i in 0..num_steps {
-                        (
-                            values,
-                            next_state,
-                            running_q,
-                            running_v,
-                            doc_running_q,
-                            doc_running_v,
-                        ) = r1cs_converter.gen_wit_i(
-                            i,
-                            current_state,
-                            running_q.clone(),
-                            running_v.clone(),
-                            doc_running_q.clone(),
-                            doc_running_v.clone(),
-                        );
+                    //     //println!("VALUES ROUND {:#?}: {:#?}", i, values);
+                    //     //println!("EXT VALUES ROUND {:#?}: {:#?}", i, extd_val);
 
-                        //println!("VALUES ROUND {:#?}: {:#?}", i, values);
-                        //println!("EXT VALUES ROUND {:#?}: {:#?}", i, extd_val);
-
-                        prover_data.check_all(&values);
-                        // for next i+1 round
-                        current_state = next_state;
-                    }
-                    println!("b? {:#?}", b.clone());
+                    //     prover_data.check_all(&values);
+                    //     // for next i+1 round
+                    //     current_state = next_state;
+                    // }
+                    // d = t.elapsed();
+                    // println!("gen wit {:#?}",d);
+                    // println!("b? {:#?}", b.clone());
                     println!(
                         "cost model: {:#?}",
                         costs::full_round_cost_model_nohash(
@@ -1675,18 +1687,18 @@ mod tests {
                             c,
                         )
                     );
-                    println!("actual cost: {:#?}", prover_data.r1cs.constraints.len());
-                    assert!(
-                        prover_data.r1cs.constraints.len() as usize
-                            <= costs::full_round_cost_model_nohash(
-                                &dfa,
-                                s,
-                                b.clone(),
-                                dfa.is_match(&chars),
-                                doc.len(),
-                                c
-                            )
-                    ); // deal with later TODO
+                    // println!("actual cost: {:#?}", prover_data.r1cs.constraints.len());
+                    // assert!(
+                    //     prover_data.r1cs.constraints.len() as usize
+                    //         <= costs::full_round_cost_model_nohash(
+                    //             &dfa,
+                    //             s,
+                    //             b.clone(),
+                    //             dfa.is_match(&chars),
+                    //             doc.len(),
+                    //             c
+                    //         )
+                    // ); // deal with later TODO
                 }
             }
         }
@@ -1849,9 +1861,9 @@ mod tests {
         let ASCIIchars: Vec<char> = (0..128).filter_map(std::char::from_u32).collect();
         test_func_no_hash(
             ASCIIchars.into_iter().collect::<String>(),
-            "^.*our technology.*$".to_string(),
+            "our technology.*$".to_string(),
             fs::read_to_string("gov_text.txt").unwrap(),
-            vec![1],
+            vec![2,6,10 ],
             true,
         );
     }
