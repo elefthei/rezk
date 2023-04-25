@@ -77,7 +77,6 @@ pub fn gen_commitment(
                 hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
                 sponge.finish(acc).unwrap();
             }
-            println!("commitment = {:#?}", hash.clone());
             //self.hash_commitment = Some((start, hash[0]));
 
             return ReefCommitment::HashChain(hash[0]);
@@ -89,7 +88,6 @@ pub fn gen_commitment(
             doc_ext.append(&mut vec![Integer::from(0); doc_ext_len - doc_ext.len()]);
 
             let mut mle = mle_from_pts(doc_ext);
-            println!("mle: {:#?}", mle);
 
             let gens_t = CommitmentGens::<G1>::new(b"nlookup document commitment", mle.len()); // n is dimension
             let blind = <G1 as Group>::Scalar::random(&mut OsRng);
@@ -210,11 +208,6 @@ pub fn final_clear_checks(
             // or - nlookup commitment check
             match (final_doc_q, final_doc_v) {
                 (Some(q), Some(v)) => {
-                    println!(
-                        "final doc check fixing q,v: {:#?}, {:#?}, dc: {:#?}",
-                        q, v, dc
-                    );
-
                     let doc_ext_len = doc.len().next_power_of_two();
 
                     // right form for inner product
@@ -251,7 +244,6 @@ pub fn run_backend(
     temp_batch_size: usize, // this may be 0 if not overridden, only use to feed into R1CS object
 ) {
     let sc = Sponge::<<G1 as Group>::Scalar, typenum::U2>::api_constants(Strength::Standard);
-
     let mut r1cs_converter = R1CS::new(
         dfa,
         doc,
@@ -260,7 +252,7 @@ pub fn run_backend(
         batching_type,
         commit_docype,
     );
-    //let parse_ms = p_time.elapsed().as_millis();
+
     let q_len = logmn(r1cs_converter.table.len());
     let qd_len = logmn(r1cs_converter.doc.len());
 
@@ -277,11 +269,14 @@ pub fn run_backend(
     println!("generate commitment");
     // to get rid clone
     let reef_commit = gen_commitment(r1cs_converter.commit_type, usize_doc.clone(), &sc);
-    let commit_ms = c_time.elapsed().as_millis();
+    let mut duration = c_time.elapsed().as_millis();
+    println!("Commitment generation time : {:?}",duration);
+
 
     let r_time = Instant::now();
     let (prover_data, _verifier_data) = r1cs_converter.to_circuit();
-    let r1cs_ms = r_time.elapsed().as_millis();
+    duration = r_time.elapsed().as_millis();
+    println!("R1CS compile time : {:?}",duration);
 
     let s_time = Instant::now();
     // use "empty" (witness-less) circuit to generate nova F
@@ -429,11 +424,8 @@ pub fn run_backend(
     // recursive SNARK
     let mut recursive_snark: Option<RecursiveSNARK<G1, G2, C1, C2>> = None;
 
-    //let setup_ms = s_time.elapsed().as_millis();
-
     // TODO deal with time bs
 
-    let n_time = Instant::now();
     let parameter = IOPattern(vec![SpongeOp::Absorb(2), SpongeOp::Squeeze(1)]);
 
     let num_steps =
@@ -450,10 +442,15 @@ pub fn run_backend(
 
     let mut next_state = 0; //dfa.get init state ??
     let mut prev_hash = <G1 as Group>::Scalar::from(0);
+    duration = s_time.elapsed().as_millis();
+    println!("NOVA setup time : {:?}",duration);
+
+    let mut w_time;
     for i in 0..num_steps {
         println!("STEP {}", i);
 
         // allocate real witnesses for round i
+        w_time = Instant::now();
         (
             wits,
             next_state,
@@ -469,12 +466,7 @@ pub fn run_backend(
             doc_running_q.clone(),
             doc_running_v.clone(),
         );
-        //println!("prover_data {:#?}", prover_data.clone());
-        //println!("wits {:#?}", wits.clone());
-        //let extended_wit = prover_data.precomp.eval(&wits);
-        //println!("extended wit {:#?}", extended_wit);
 
-        //prover_data.check_all(&extended_wit);
         prover_data.check_all(&wits);
 
         let current_char = doc[i * r1cs_converter.batch_size].clone();
@@ -482,7 +474,6 @@ pub fn run_backend(
         if i + 1 < num_steps {
             next_char = doc[(i + 1) * r1cs_converter.batch_size].clone();
         };
-        //println!("next char = {}", next_char);
 
         // todo put this in r1cs
         let mut next_hash = <G1 as Group>::Scalar::from(0);
@@ -517,13 +508,11 @@ pub fn run_backend(
         let glue = match (r1cs_converter.batching, r1cs_converter.commit_type) {
             (JBatching::NaivePolys, JCommit::HashChain) => {
                 let next_hash = r1cs_converter.prover_calc_hash(prev_hash, i);
-                println!("ph, nh: {:#?}, {:#?}", prev_hash.clone(), next_hash.clone());
                 let g = vec![
                     GlueOpts::Poly_Hash(prev_hash),
                     GlueOpts::Poly_Hash(next_hash),
                 ];
                 prev_hash = next_hash;
-                println!("ph, nh: {:#?}, {:#?}", prev_hash.clone(), next_hash.clone());
                 g
             }
             (JBatching::Nlookup, JCommit::HashChain) => {
@@ -645,9 +634,11 @@ pub fn run_backend(
         );
         // trivial circuit
         let circuit_secondary = TrivialTestCircuit::new(StepCounterType::External);
+        
+        duration = w_time.elapsed().as_millis();
+        println!("Witness generation time : {:?}",duration);
 
-        //println!("STEP CIRC WIT for i={}: {:#?}", i, circuit_primary);
-        // snark
+        let p_time: Instant = Instant::now();
         let result = RecursiveSNARK::prove_step(
             &pp,
             recursive_snark,
@@ -656,11 +647,12 @@ pub fn run_backend(
             z0_primary.clone(),
             z0_secondary.clone(),
         );
-        //println!("prove step {:#?}", result);
 
         assert!(result.is_ok());
-        println!("RecursiveSNARK::prove_step {}: {:?}", i, result.is_ok());
         recursive_snark = Some(result.unwrap());
+
+        duration = p_time.elapsed().as_millis();
+        println!("Prove time : {:?}",duration);
 
         // for next i+1 round
         current_state = next_state;
@@ -680,10 +672,11 @@ pub fn run_backend(
         z0_primary.clone(),
         z0_secondary.clone(),
     );
-    println!("Recursive res: {:#?}", res);
 
     assert!(res.is_ok()); // TODO delete
 
+
+    let compression_time = Instant::now();
     // compressed SNARK
     type EE1 = nova_snark::provider::ipa_pc::EvaluationEngine<G1>;
     type EE2 = nova_snark::provider::ipa_pc::EvaluationEngine<G2>;
@@ -692,18 +685,14 @@ pub fn run_backend(
     let res = CompressedSNARK::<_, _, _, _, S1, S2>::prove(&pp, &recursive_snark);
     assert!(res.is_ok());
     let compressed_snark = res.unwrap();
-
-    let nova_prover_ms = n_time.elapsed().as_millis();
-
-    println!("nova prover ms {:#?}", nova_prover_ms / 10);
+    
+    duration = compression_time.elapsed().as_millis();
+    println!("SNARK compression time : {:?}",duration);
 
     // VERIFIER verify compressed snark
     let n_time = Instant::now();
     let res = compressed_snark.verify(&pp, FINAL_EXTERNAL_COUNTER, z0_primary, z0_secondary);
     assert!(res.is_ok());
-    let nova_verifier_ms = n_time.elapsed().as_millis();
-
-    println!("nova verifier ms {:#?}", nova_verifier_ms);
 
     // final "in the clear" V checks
     // // state, char, opt<hash>, opt<v,q for eval>, opt<v,q for doc>, accepting
@@ -769,6 +758,9 @@ pub fn run_backend(
             );
         }
     }
+    let nova_verifier_ms = n_time.elapsed().as_millis();
+    println!("nova verifier time: {:#?}", nova_verifier_ms);
+    
 }
 
 // TODO test, TODO over ff, not Integers
@@ -783,7 +775,6 @@ fn mle_from_pts(pts: Vec<Integer>) -> Vec<Integer> {
     }
 
     let h = num_pts / 2;
-    println!("num_pts {}, h {}", num_pts, h);
 
     let mut l = mle_from_pts(pts[..h].to_vec());
     let mut r = mle_from_pts(pts[h..].to_vec());
@@ -883,11 +874,9 @@ mod tests {
         // verify
         let num_vars = running_q.len();
 
-        println!("ipa {:#?}", ipa.clone().unwrap());
         let res = ipa
             .unwrap()
             .verify(&gens_t, &gens_single, num_vars, &ipi, &mut v_transcript);
-        println!("res {:#?}", res);
 
         // this doesn't pass
         assert!(res.is_ok());
@@ -908,7 +897,6 @@ mod tests {
         ];
 
         let mle = mle_from_pts(uni.clone());
-        println!("mle coeffs: {:#?}", mle);
 
         // 011 = 6
         //let q = vec![Integer::from(0), Integer::from(1), Integer::from(1)];
@@ -924,8 +912,6 @@ mod tests {
         }
 
         let q_ext = q_to_mle_q(&q, mle_f.len());
-
-        println!("q_ext: {:#?}", q_ext);
 
         assert_eq!(mle_f.len(), q_ext.len());
         // inner product
