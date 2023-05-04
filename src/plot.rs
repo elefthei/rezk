@@ -1,15 +1,12 @@
 use itertools::Itertools;
-use std::fmt::{Display, Error, Formatter};
 use std::fs::File;
 use std::io::Result;
-use std::process::{Command, ExitStatus};
+use std::process::Command;
 
-use crate::dfa::NFA;
-use crate::regex::Regex;
+use crate::nfa::NFA;
 
 type Ed = (usize, String, usize);
 
-#[cfg(feature = "plot")]
 impl<'a> dot::Labeller<'a, usize, Ed> for NFA {
     fn graph_id(&'a self) -> dot::Id<'a> {
         dot::Id::new("example").unwrap()
@@ -40,7 +37,6 @@ impl<'a> dot::Labeller<'a, usize, Ed> for NFA {
     }
 }
 
-#[cfg(feature = "plot")]
 impl<'a> dot::GraphWalk<'a, usize, Ed> for NFA {
     fn nodes(&'a self) -> dot::Nodes<'a, usize> {
         (0..self.n).collect()
@@ -74,24 +70,59 @@ impl<'a> dot::GraphWalk<'a, usize, Ed> for NFA {
     }
 }
 
-#[cfg(feature = "plot")]
-pub fn plot_nfa<'a>(nfa: &'a NFA) -> Result<ExitStatus> {
-    let dotfile = "nfa.dot";
-
-    // Output file
-    let mut buffer = File::create(dotfile).unwrap();
-
-    // render .dot file
-    dot::render(nfa, &mut buffer).unwrap();
-    println!("Wrote DOT file {}.", dotfile);
-
-    // Convert to pdf
-    let mut child = Command::new("dot")
-        .arg("-Tpdf")
-        .arg(dotfile)
-        .arg("-o")
-        .arg("nfa.pdf")
-        .spawn()
-        .expect("[dot] CLI failed to convert dfa to [pdf] file");
-    child.wait()
+pub trait Plottable {
+    fn plot(&self, fin: &str) -> Result<()>;
 }
+
+impl Plottable for NFA {
+    fn plot(&self, fin: &str) -> Result<()> {
+        let filename = fin.to_string();
+        let dotfile = filename.clone() + ".dot";
+        let pdffile = filename + ".pdf";
+
+        // Output file
+        let mut buffer = File::create(&dotfile).unwrap();
+
+        // render .dot file
+        dot::render(self, &mut buffer).unwrap();
+        println!("Wrote DOT file {}.", &dotfile);
+
+        // Convert to pdf
+        Command::new("dot")
+            .arg("-Tpdf")
+            .arg(dotfile)
+            .arg("-o")
+            .arg(pdffile)
+            .spawn()
+            .expect("[dot] CLI failed to convert nfa to [pdf] file")
+            .wait()?;
+        Ok(())
+    }
+}
+
+impl Plottable for Vec<NFA> {
+    fn plot(&self, fin: &str) -> Result<()> {
+        let filename = fin.to_string();
+        let dotfiles = (0..self.len()).map(|i| filename.to_owned() + &i.to_string() + ".dot");
+        let pdffiles = (0..self.len()).map(|i| filename.to_owned() + &i.to_string() + ".pdf");
+        let end_pdf = filename.to_owned() + ".pdf";
+
+        self.into_iter()
+            .enumerate()
+            .try_for_each(|(i, nfa)| nfa.plot(&(filename.clone() + &i.to_string())))?;
+
+        Command::new("pdfjam")
+            .args(pdffiles.clone())
+            .arg("-o")
+            .arg(end_pdf)
+            .spawn()
+            .expect("[pdfjam] CLI failed to concatenate pdf files")
+            .wait()?;
+
+        for f in dotfiles.into_iter().chain(pdffiles.into_iter()) {
+            std::fs::remove_file(f)?;
+        }
+        Ok(())
+    }
+}
+

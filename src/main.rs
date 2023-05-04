@@ -4,20 +4,19 @@ use std::time::{Duration, Instant};
 
 use reef::backend::{framework::*, r1cs_helper::init};
 use reef::config::*;
+use reef::regex::Regex;
+use reef::nfa::NFA;
 
 #[cfg(feature = "plot")]
-use reef::plot;
-
-use reef::dfa::NFA;
+use reef::plot::*;
 
 fn main() {
-    let p_time = Instant::now();
     let opt = Options::parse();
 
     // Alphabet
     let ab = String::from_iter(opt.config.alphabet());
 
-    // Regular expresion parser and convert the Regex to a DFA
+    // Input document
     let mut doc = opt
         .config
         .read_file(&opt.input)
@@ -25,21 +24,19 @@ fn main() {
         .map(|c| c.to_string())
         .collect();
 
-    // Input document
-    let mut nfa = NFA::new(&ab, opt.re);
+    // NFA compilation
+    let mut nfa = NFA::new(&ab, Regex::new(&opt.re));
+
+    // Is well-formed?
+    nfa.well_formed(&doc);
 
     // Try to use k-stride
     opt.k_stride.map(|k| {
         doc = nfa.k_stride(k, &doc);
     });
 
-    // Is document well-formed
-    nfa.well_formed(&doc);
-
-    // println!("NFA: {:#?}", nfa);
-
     #[cfg(feature = "plot")]
-    plot::plot_nfa(&nfa).expect("Failed to plot NFA to a pdf file");
+    nfa.plot("nfa").expect("Failed to plot NFA to a pdf file");
 
     println!("Doc len is {}", doc.len());
     println!(

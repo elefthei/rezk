@@ -6,7 +6,7 @@ use crate::backend::{
     nova::*,
     r1cs::*,
 };
-use crate::dfa::{EPSILON, NFA};
+use crate::nfa::{EPSILON, NFA};
 use generic_array::typenum;
 use neptune::{
     sponge::vanilla::{Sponge, SpongeTrait},

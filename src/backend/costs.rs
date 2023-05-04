@@ -1,6 +1,6 @@
 use core::panic;
 
-use crate::dfa::NFA;
+use crate::nfa::NFA;
 use clap::ValueEnum;
 
 static POSEIDON_NUM: usize = 238; // jess took literal measurement and 238 is the real diff
