@@ -7,9 +7,6 @@ use reef::config::*;
 use reef::regex::Regex;
 use reef::nfa::NFA;
 
-#[cfg(feature = "plot")]
-use reef::plot::*;
-
 fn main() {
     let opt = Options::parse();
 
@@ -34,9 +31,6 @@ fn main() {
     opt.k_stride.map(|k| {
         doc = nfa.k_stride(k, &doc);
     });
-
-    #[cfg(feature = "plot")]
-    nfa.plot("nfa").expect("Failed to plot NFA to a pdf file");
 
     println!("Doc len is {}", doc.len());
     println!(

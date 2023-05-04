@@ -559,7 +559,7 @@ mod tests {
 
     use crate::backend::framework::*;
     use crate::backend::r1cs_helper::init;
-    use crate::dfa::NFA;
+    use crate::nfa::NFA;
     use crate::regex::Regex;
 
     fn backend_test(
