@@ -28,9 +28,14 @@ fn main() {
     nfa.well_formed(&doc);
 
     // Try to use k-stride
-    opt.k_stride.map(|k| {
+    if let Some(k) = opt.k_stride {
         doc = nfa.k_stride(k, &doc);
-    });
+    }
+
+    // Plot NFA in PDF
+    if let Some(f) = opt.plot {
+        nfa.write_pdf(f.as_str()).unwrap();
+    }
 
     println!("Doc len is {}", doc.len());
     println!(
