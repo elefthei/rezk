@@ -356,8 +356,6 @@ fn solve<'a>(
     let mut next_state = current_state;
 
     for i in 0..num_steps {
-        let test = format!("step {}", i);
-
         #[cfg(feature = "metrics")]
         log::tic(Component::Solver, &test, "witness generation");
         // allocate real witnesses for round i
@@ -577,8 +575,6 @@ fn prove_and_verify(
     let z0_secondary = vec![<G2 as Group>::Scalar::zero()];
 
     for i in 0..proof_info.num_steps {
-        let test = format!("step {}", i);
-
         // blocks until we receive first witness
         let circuit_primary = recv.recv().unwrap();
 

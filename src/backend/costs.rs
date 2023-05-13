@@ -43,7 +43,7 @@ pub fn accepting_circuit<'a>(nfa: &'a NFA, is_match: Option<(usize, usize)>) -> 
     // (alt, # non final states - 1)
     let cost: usize = 5; //constrain to boolean costs and bool accepting
     let nstate =  match is_match {
-        None => nfa.get_non_final_states().len() as usize - 1 ,
+        None => nfa.non_accepting().len() as usize - 1 ,
         _ => nfa.accepting().len() as usize - 1,
     };
     cost+nstate+2

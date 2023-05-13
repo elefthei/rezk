@@ -143,11 +143,10 @@ impl NFA {
     }
 
     /// Non final states
-    pub fn get_non_final_states(&self) -> HashSet<usize> {
-        self.get_states()
-            .difference(&self.accepting())
-            .map(|c| c.clone())
-            .collect()
+    pub fn non_accepting(&self) -> HashSet<usize> {
+        self.g.node_indices()
+            .filter(|i| ! self.g[*i].nullable())
+            .map(|v| v.index()).collect()
     }
 
     /// Single step transition
@@ -186,7 +185,7 @@ impl NFA {
             return Some((0, 0));
         }
         // For every postfix of doc (O(n^2))
-        start_idxs.into_iter().find_map(|i| { //into_par_iter().find_map_any(|i| {
+        start_idxs.into_par_iter().find_map_any(|i| {
             let mut s = self.get_init_state();
             for j in i..doc.len() {
                 // Apply transition relation
@@ -321,7 +320,7 @@ impl NFA {
         let accepting_loops: Vec<_> =
             sccs.clone()
                 .into_iter()
-                .filter(|v| v.g.node_indices().any(|i| self.accepting().contains(&i.index())) && v != self)
+                .filter(|v| v.g.node_indices().all(|i| v.accepting().contains(&i.index())) && v != self)
                 .collect();
 
         // ORIGINAL graph
