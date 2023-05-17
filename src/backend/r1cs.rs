@@ -385,8 +385,8 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
     }
 
     pub fn to_circuit(&mut self) -> (ProverData, VerifierData) {
-        self.assertions Vec::new();
-        self.pub_inputs= Vec::new();
+        self.assertions = Vec::new();
+        self.pub_inputs = Vec::new();
 
         match self.batching {
             JBatching::NaivePolys => self.to_polys(),
@@ -395,8 +395,8 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
     }
 
     pub fn commitment_to_circuit(&mut self) -> (ProverData, VerifierData) {
-        self.assertions= Vec::new();
-        self.pub_inputs= Vec::new();
+        self.assertions = Vec::new();
+        self.pub_inputs = Vec::new();
 
         let mut char_lookups = vec![];
         for c in 0..self.batch_size {
@@ -404,9 +404,9 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         }
 
         self.nlookup_gadget(char_lookups, self.udoc.len(), "nlcommit");
-    
-        //self.hashchain_commit(); don't need these orderings
-        
+
+        self.q_ordering("nlcommit");
+
         self.r1cs_conv()
     }
 
@@ -456,19 +456,8 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
 
     fn hashchain_commit(&mut self) {
         self.pub_inputs.push(new_var(format!("i_0")));
-        for idx in 1..=self.batch_size {
-            let i_plus = term(
-                Op::Eq,
-                vec![
-                    new_var(format!("i_{}", idx)),
-                    term(
-                        Op::PfNaryOp(PfNaryOp::Add),
-                        vec![new_var(format!("i_{}", idx - 1)), new_const(1)],
-                    ),
-                ],
-            );
 
-            self.assertions.push(i_plus);
+        for idx in 1..=self.batch_size {
             self.pub_inputs.push(new_var(format!("i_{}", idx)));
         }
     }
@@ -693,7 +682,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         self.r1cs_conv()
     }
 
-    fn nlookup_doc_commit(&mut self) {
+    fn q_ordering_circuit(&mut self, id: &str) {
         // q relations
         for i in 0..self.batch_size {
             // not final q (running claim)
@@ -710,7 +699,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
                             Op::PfNaryOp(PfNaryOp::Mul),
                             vec![
                                 new_const(next_slot.clone()),
-                                new_var(format!("nldoc_eq_{}_q_{}", i, j)),
+                                new_var(format!("{}_eq_{}_q_{}", id, i, j)),
                             ],
                         ),
                     ],
@@ -718,56 +707,39 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
                 next_slot *= Integer::from(2);
             }
 
-            let q_eq = term(
-                Op::Eq,
-                vec![full_q.clone(), new_var(format!("nldoc_full_{}_q", i))],
-            );
+            let q_eq = term(Op::Eq, vec![full_q.clone(), new_var(format!("i_{}", i))]);
             self.assertions.push(q_eq);
-            self.pub_inputs.push(new_var(format!("nldoc_full_{}_q", i)));
+            self.pub_inputs.push(new_var(format!("i_{}", i)));
 
             // TODO make ep num = 0?
-            if i > 0 {
-                let q_ordering = term(
-                    Op::BoolNaryOp(BoolNaryOp::Or),
-                    vec![
-                        term(
-                            Op::Eq,
-                            vec![
-                                new_const(self.udoc.len() - 1), // EPSILON num
-                                new_var(format!("nldoc_full_{}_q", i)),
-                            ],
-                        ),
-                        term(
-                            Op::Eq,
-                            vec![
-                                new_var(format!("nldoc_full_{}_q", i)),
-                                term(
-                                    Op::PfNaryOp(PfNaryOp::Add),
-                                    vec![new_var(format!("nldoc_full_{}_q", i - 1)), new_const(1)],
-                                ),
-                            ],
-                        ),
-                    ],
-                );
+            let q_ordering = term(
+                Op::BoolNaryOp(BoolNaryOp::Or),
+                vec![
+                    term(
+                        Op::Eq,
+                        vec![
+                            new_const(self.udoc.len() - 1), // EPSILON num
+                            new_var(format!("i_{}", i + 1)),
+                        ],
+                    ),
+                    term(
+                        Op::Eq,
+                        vec![
+                            new_var(format!("i_{}", i + 1)),
+                            term(
+                                Op::PfNaryOp(PfNaryOp::Add),
+                                vec![new_var(format!("i_{}", i)), new_const(1)],
+                            ),
+                        ],
+                    ),
+                ],
+            );
 
-                self.assertions.push(q_ordering);
-            } else {
-                let q_ordering = term(
-                    Op::Eq,
-                    vec![
-                        new_var(format!("nldoc_full_{}_q", i)),
-                        term(
-                            Op::PfNaryOp(PfNaryOp::Add),
-                            vec![new_var(format!("nldoc_full_prev_round_q")), new_const(1)],
-                        ),
-                    ],
-                );
-
-                self.pub_inputs
-                    .push(new_var(format!("nldoc_full_prev_round_q")));
-                self.assertions.push(q_ordering);
-            }
+            self.assertions.push(q_ordering);
         }
+    }
+    fn nlookup_doc_commit(&mut self) {
+        self.q_ordering("nldoc");
 
         // lookups and nl circuit
         let mut char_lookups = vec![];
@@ -1043,26 +1015,11 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
             v.push(self.idoc[access_at].clone());
         }
 
-        // q relations
-        let prev_round_lookup = if prev_idx.is_some() {
-            Integer::from(prev_idx.unwrap())
-        } else if self.substring.0 == 0 {
-            Integer::from(-1)
-        } else {
-            Integer::from(self.substring.0 - 1)
-        };
-
-        println!("PREV ROUND Q LOOKUP {:#?}", prev_round_lookup.clone());
-        wits.insert(
-            format!("nldoc_full_prev_round_q"),
-            new_wit(prev_round_lookup),
-        );
-
         for i in 0..q.len() {
             // not final q (running claim)
             println!("FULL Q {:#?} = {:#?}", i, q[i]);
 
-            wits.insert(format!("nldoc_full_{}_q", i), new_wit(q[i]));
+            wits.insert(format!("i_{}", i), new_wit(q[i]));
         }
         let next_idx = q[q.len() - 1] as isize;
 

@@ -11,7 +11,6 @@ use crate::backend::{
     commitment::*,
     costs::{logmn, JBatching, JCommit},
     nova::*,
-    proof_execution::*,
     r1cs::*,
 };
 use crate::nfa::NFA;
@@ -32,11 +31,22 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+struct ProofInfo {
+    pp: Arc<Mutex<PublicParams<G1, G2, C1, C2>>>,
+    z0_primary: Vec<<G1 as Group>::Scalar>,
+    num_steps: usize,
+    commit: ReefCommitment<<G1 as Group>::Scalar>,
+    table: Vec<Integer>,
+    doc_len: usize,
+    eval_type: JBatching,
+    commit_type: JCommit,
+}
+
 #[cfg(feature = "metrics")]
 use crate::metrics::{log, log::Component};
 
 // gen R1CS object, commitment, make step circuit for nova
-pub fn run_backend(
+pub fn run_proof(
     nfa: NFA,
     doc: Vec<String>,
     batching_type: Option<JBatching>,
@@ -321,12 +331,6 @@ fn setup<'a>(
             z
         }
     };
-
-    /* println!(
-            "substring {:#?}, batch_size {:#?}",
-            r1cs_converter.substring, r1cs_converter.batch_size
-        );
-    */
 
     let num_steps = ceil_div(
         r1cs_converter.substring.1 - r1cs_converter.substring.0,

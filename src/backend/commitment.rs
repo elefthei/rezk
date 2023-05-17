@@ -7,10 +7,16 @@ type EE2 = nova_snark::provider::ipa_pc::EvaluationEngine<G2>;
 type S1 = nova_snark::spartan::RelaxedR1CSSNARK<G1, EE1>;
 type S2 = nova_snark::spartan::RelaxedR1CSSNARK<G2, EE2>;
 
-use crate::backend::costs::{JBatching, JCommit};
-use crate::backend::nova::{int_to_ff, NFAStepCircuit};
-use crate::backend::r1cs_helper::verifier_mle_eval;
+use crate::backend::{
+    proof_execution::*
+    costs::{logmn, JBatching, JCommit},
+    nova::*,
+    r1cs::*,
+};
+use crate::nfa::NFA;
 use circ::cfg::cfg;
+use circ::target::r1cs::wit_comp::StagedWitCompEvaluator;
+use circ::target::r1cs::ProverData;
 use ff::{Field, PrimeField};
 use generic_array::typenum;
 use merlin::Transcript;
@@ -18,6 +24,7 @@ use neptune::{
     poseidon::PoseidonConstants,
     sponge::api::{IOPattern, SpongeAPI, SpongeOp},
     sponge::vanilla::{Mode, Sponge, SpongeTrait},
+    Strength,
 };
 use nova_snark::{
     errors::NovaError,
@@ -30,10 +37,14 @@ use nova_snark::{
         circuit::TrivialTestCircuit, commitment::*, AbsorbInROTrait, Group, ROConstantsTrait,
         ROTrait,
     },
-    CompressedSNARK,
+    CompressedSNARK, PublicParams, RecursiveSNARK, StepCounterType, FINAL_EXTERNAL_COUNTER,
 };
 use rand::rngs::OsRng;
 use rug::{integer::Order, ops::RemRounding, Integer};
+use std::sync::mpsc;
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 #[derive(Debug, Clone)]
 pub struct ReefCommitment<F: PrimeField> {
