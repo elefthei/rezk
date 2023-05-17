@@ -87,9 +87,8 @@ pub fn run_backend(
 
         #[cfg(feature = "metrics")]
         log::tic(Component::Compiler, "R1CS", "Commitment Generations");
-        let reef_commit =
-            gen_commitment(r1cs_converter.commit_type, r1cs_converter.udoc.clone(), &sc);
-        r1cs_converter.set_commitment(reef_commit.clone());
+        let reef_commit = gen_commitment(r1cs_converter.udoc.clone(), &sc); // todo clone
+        r1cs_converter.reef_commit = Some(reef_commit.clone()); // todo clone
 
         #[cfg(feature = "metrics")]
         log::stop(Component::Compiler, "R1CS", "Commitment Generations");
@@ -264,16 +263,16 @@ fn setup<'a>(
 
     // this variable could be two different types of things, which is potentially dicey, but
     // literally whatever
-    let blind = match r1cs_converter.reef_commit.clone().unwrap() {
-        ReefCommitment::HashChain(hcs) => hcs.blind,
-        ReefCommitment::Nlookup(dcs) => dcs.commit_doc_hash,
+    let blind = match r1cs_converter.commit_type {
+        JCommit::HashChain => r1cs_converter.reef_commit.unwrap().chain.blind,
+        JCommit::Nlookup => r1cs_converter.reef_commit.unwrap().poly.commit_doc_hash,
     };
     // TODO only do this for HC
-    let prev_hash = match r1cs_converter.reef_commit.clone().unwrap() {
-        ReefCommitment::HashChain(_) => {
+    let prev_hash = match r1cs_converter.commit_type {
+        JCommit::HashChain => {
             r1cs_converter.prover_calc_hash(blind, true, 0, r1cs_converter.substring.0)
         }
-        ReefCommitment::Nlookup(_) => <G1 as Group>::Scalar::from(0),
+        JCommit::Nlookup => <G1 as Group>::Scalar::from(0),
     };
 
     let current_state = r1cs_converter.nfa.get_init_state();
@@ -369,9 +368,9 @@ fn solve<'a>(
 
     // this variable could be two different types of things, which is potentially dicey, but
     // literally whatever
-    let blind = match r1cs_converter.reef_commit.clone().unwrap() {
-        ReefCommitment::HashChain(hcs) => hcs.blind,
-        ReefCommitment::Nlookup(dcs) => dcs.commit_doc_hash,
+    let blind = match r1cs_converter.commit_type {
+        JCommit::HashChain => r1cs_converter.reef_commit.unwrap().chain.blind,
+        JCommit::Nlookup => r1cs_converter.reef_commit.unwrap().poly.commit_doc_hash,
     };
     // TODO put this in glue
 
@@ -390,11 +389,11 @@ fn solve<'a>(
     let mut next_doc_idx;
 
     // TODO only do this for HC
-    let mut prev_hash = match r1cs_converter.reef_commit.clone().unwrap() {
-        ReefCommitment::HashChain(_) => {
+    let mut prev_hash = match r1cs_converter.commit_type {
+        JCommit::HashChain => {
             r1cs_converter.prover_calc_hash(blind, true, 0, r1cs_converter.substring.0)
         }
-        ReefCommitment::Nlookup(_) => <G1 as Group>::Scalar::from(0),
+        JCommit::Nlookup => <G1 as Group>::Scalar::from(0),
     };
 
     let mut current_state = r1cs_converter.nfa.get_init_state();
@@ -773,6 +772,7 @@ fn verify(
         (JBatching::NaivePolys, JCommit::HashChain) => {
             final_clear_checks(
                 eval_type,
+                commit_type,
                 reef_commit,
                 zn[3],
                 &table, // clones in function?
@@ -787,6 +787,7 @@ fn verify(
         (JBatching::NaivePolys, JCommit::Nlookup) => {
             final_clear_checks(
                 eval_type,
+                commit_type,
                 reef_commit,
                 zn[3 + qd_len],
                 &table,
@@ -801,6 +802,7 @@ fn verify(
         (JBatching::Nlookup, JCommit::HashChain) => {
             final_clear_checks(
                 eval_type,
+                commit_type,
                 reef_commit,
                 zn[3 + q_len + 1],
                 &table,
@@ -815,6 +817,7 @@ fn verify(
         (JBatching::Nlookup, JCommit::Nlookup) => {
             final_clear_checks(
                 eval_type,
+                commit_type,
                 reef_commit,
                 zn[2 + q_len + 1 + qd_len + 1],
                 &table,

@@ -26,9 +26,9 @@ type G1 = pasta_curves::pallas::Point;
 type G2 = pasta_curves::vesta::Point;
 
 #[derive(Debug, Clone)]
-pub enum ReefCommitment<F: PrimeField> {
-    HashChain(HashCommitmentStruct<F>),
-    Nlookup(DocCommitmentStruct<F>),
+pub struct ReefCommitment<F: PrimeField> {
+    pub chain: HashCommitmentStruct<F>,
+    pub poly: DocCommitmentStruct<F>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,7 +48,6 @@ pub struct DocCommitmentStruct<F> {
 }
 
 pub fn gen_commitment(
-    commit_docype: JCommit,
     doc: Vec<usize>,
     pc: &PoseidonConstants<<G1 as Group>::Scalar, typenum::U4>,
 ) -> ReefCommitment<<G1 as Group>::Scalar>
@@ -56,96 +55,96 @@ where
     G1: Group<Base = <G2 as Group>::Scalar>,
     G2: Group<Base = <G1 as Group>::Scalar>,
 {
-    match commit_docype {
-        JCommit::HashChain => {
-            let mut hash;
+    //JCommit::HashChain => {
+    let mut hash;
 
-            // H_0 = Hash(0, r, 0)
-            let mut sponge = Sponge::new_with_constants(pc, Mode::Simplex);
-            let acc = &mut ();
+    // H_0 = Hash(0, r, 0)
+    let mut sponge = Sponge::new_with_constants(pc, Mode::Simplex);
+    let acc = &mut ();
 
-            let parameter = IOPattern(vec![SpongeOp::Absorb(2), SpongeOp::Squeeze(1)]);
-            sponge.start(parameter, None, acc);
+    let parameter = IOPattern(vec![SpongeOp::Absorb(2), SpongeOp::Squeeze(1)]);
+    sponge.start(parameter, None, acc);
 
-            let blind = <G1 as Group>::Scalar::random(&mut OsRng);
+    let blind = <G1 as Group>::Scalar::random(&mut OsRng);
 
-            SpongeAPI::absorb(
-                &mut sponge,
-                2,
-                &[blind, <G1 as Group>::Scalar::from(0)],
-                acc,
-            );
-            hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
-            sponge.finish(acc).unwrap();
+    SpongeAPI::absorb(
+        &mut sponge,
+        2,
+        &[blind, <G1 as Group>::Scalar::from(0)],
+        acc,
+    );
+    hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
+    sponge.finish(acc).unwrap();
 
-            let mut i = 0;
-            // H_i = Hash(H_i-1, char, i)
-            for c in doc.into_iter() {
-                let mut sponge = Sponge::new_with_constants(pc, Mode::Simplex);
-                let acc = &mut ();
+    let mut i = 0;
+    // H_i = Hash(H_i-1, char, i)
+    for c in doc.clone().into_iter() {
+        let mut sponge = Sponge::new_with_constants(pc, Mode::Simplex);
+        let acc = &mut ();
 
-                let parameter = IOPattern(vec![SpongeOp::Absorb(3), SpongeOp::Squeeze(1)]);
-                sponge.start(parameter, None, acc);
+        let parameter = IOPattern(vec![SpongeOp::Absorb(3), SpongeOp::Squeeze(1)]);
+        sponge.start(parameter, None, acc);
 
-                SpongeAPI::absorb(
-                    &mut sponge,
-                    3,
-                    &[
-                        hash[0],
-                        <G1 as Group>::Scalar::from(c as u64),
-                        <G1 as Group>::Scalar::from(i),
-                    ],
-                    acc,
-                );
-                hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
+        SpongeAPI::absorb(
+            &mut sponge,
+            3,
+            &[
+                hash[0],
+                <G1 as Group>::Scalar::from(c as u64),
+                <G1 as Group>::Scalar::from(i),
+            ],
+            acc,
+        );
+        hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
 
-                sponge.finish(acc).unwrap();
-                i += 1;
-            }
+        sponge.finish(acc).unwrap();
+        i += 1;
+    }
 
-            return ReefCommitment::HashChain(HashCommitmentStruct {
-                commit: hash[0],
-                blind: blind,
-            });
-        }
-        JCommit::Nlookup => {
-            let doc_ext_len = doc.len().next_power_of_two();
+    let chain = HashCommitmentStruct {
+        commit: hash[0],
+        blind: blind,
+    };
 
-            let mut doc_ext: Vec<Integer> = doc.into_iter().map(|x| Integer::from(x)).collect();
-            doc_ext.append(&mut vec![Integer::from(0); doc_ext_len - doc_ext.len()]);
+    //JCommit::Nlookup => {
+    let doc_ext_len = doc.len().next_power_of_two();
 
-            let mle = mle_from_pts(doc_ext);
+    let mut doc_ext: Vec<Integer> = doc.into_iter().map(|x| Integer::from(x)).collect();
+    doc_ext.append(&mut vec![Integer::from(0); doc_ext_len - doc_ext.len()]);
 
-            let gens_t = CommitmentGens::<G1>::new(b"nlookup document commitment", mle.len()); // n is dimension
-            let blind = <G1 as Group>::Scalar::random(&mut OsRng);
+    let mle = mle_from_pts(doc_ext);
 
-            let scalars: Vec<<G1 as Group>::Scalar> = //<G1 as Group>::Scalar> =
+    let gens_t = CommitmentGens::<G1>::new(b"nlookup document commitment", mle.len()); // n is dimension
+    let blind = <G1 as Group>::Scalar::random(&mut OsRng);
+
+    let scalars: Vec<<G1 as Group>::Scalar> = //<G1 as Group>::Scalar> =
                 mle.into_iter().map(|x| int_to_ff(x)).collect();
 
-            let commit_doc = <G1 as Group>::CE::commit(&gens_t, &scalars, &blind);
+    let commit_doc = <G1 as Group>::CE::commit(&gens_t, &scalars, &blind);
 
-            // for in circuit hashing
-            let mut ro: PoseidonRO<<G2 as Group>::Scalar, <G1 as Group>::Scalar> =
-                PoseidonRO::new(PoseidonConstantsCircuit::new(), 3);
-            commit_doc.absorb_in_ro(&mut ro);
-            let commit_doc_hash = ro.squeeze(256); // todo
+    // for in circuit hashing
+    let mut ro: PoseidonRO<<G2 as Group>::Scalar, <G1 as Group>::Scalar> =
+        PoseidonRO::new(PoseidonConstantsCircuit::new(), 3);
+    commit_doc.absorb_in_ro(&mut ro);
+    let commit_doc_hash = ro.squeeze(256); // todo
 
-            let doc_commit = DocCommitmentStruct {
-                gens: gens_t.clone(),
-                gens_single: CommitmentGens::<G1>::new_with_blinding_gen(
-                    b"gens_s",
-                    1,
-                    &gens_t.get_blinding_gen(),
-                ),
-                commit_doc: commit_doc.compress(),
-                vec_t: scalars,
-                decommit_doc: blind,
-                commit_doc_hash: commit_doc_hash,
-            };
+    let doc_commit = DocCommitmentStruct {
+        gens: gens_t.clone(),
+        gens_single: CommitmentGens::<G1>::new_with_blinding_gen(
+            b"gens_s",
+            1,
+            &gens_t.get_blinding_gen(),
+        ),
+        commit_doc: commit_doc.compress(),
+        vec_t: scalars,
+        decommit_doc: blind,
+        commit_doc_hash: commit_doc_hash,
+    };
 
-            return ReefCommitment::Nlookup(doc_commit);
-        }
-    }
+    return ReefCommitment {
+        chain,
+        poly: doc_commit,
+    };
 }
 
 // this crap will need to be seperated out
@@ -182,6 +181,7 @@ pub fn proof_dot_prod(
 
 pub fn final_clear_checks(
     eval_type: JBatching,
+    commit_type: JCommit,
     reef_commitment: ReefCommitment<<G1 as Group>::Scalar>,
     accepting_state: <G1 as Group>::Scalar,
     table: &Vec<Integer>,
@@ -233,12 +233,14 @@ pub fn final_clear_checks(
 
     // todo vals align
     // hash chain commitment check
-    match reef_commitment {
-        ReefCommitment::HashChain(h) => {
+    match commit_type {
+        JCommit::HashChain => {
+            //ReefCommitment::HashChain(h) => {
             // todo substring
-            assert_eq!(h.commit, final_hash.unwrap());
+            assert_eq!(reef_commitment.chain.commit, final_hash.unwrap());
         }
-        ReefCommitment::Nlookup(dc) => {
+        JCommit::Nlookup => {
+            //ReefCommitment::Nlookup(dc) => {
             // or - nlookup commitment check
             match (final_doc_q, final_doc_v) {
                 (Some(q), Some(v)) => {
@@ -249,7 +251,7 @@ pub fn final_clear_checks(
                     let q_ext = q_to_mle_q(&q_rev, doc_ext_len);
 
                     // Doc is commited to in this case
-                    assert!(proof_dot_prod(dc, q_ext, v).is_ok());
+                    assert!(proof_dot_prod(reef_commitment.poly, q_ext, v).is_ok());
                 }
                 (Some(_), None) => {
                     panic!("only half of running claim recieved");

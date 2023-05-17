@@ -154,7 +154,6 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         }
 
         // generate usize doc
-        // doc to usizes - can I use this elsewhere too? TODO
         let mut usize_doc = vec![];
         let mut int_doc = vec![];
         for c in batch_doc.clone().into_iter() {
@@ -179,20 +178,6 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
             is_match,
             substring,
             pc: pcs,
-        }
-    }
-
-    pub fn set_commitment(&mut self, rc: ReefCommitment<F>) {
-        match (&rc, self.commit_type) {
-            (ReefCommitment::HashChain(_), JCommit::HashChain) => {
-                self.reef_commit = Some(rc);
-            }
-            (ReefCommitment::Nlookup(_), JCommit::Nlookup) => {
-                self.reef_commit = Some(rc);
-            }
-            _ => {
-                panic!("Commitment does not match selected type");
-            }
         }
     }
 
@@ -1181,10 +1166,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         sponge.start(IOPattern(pattern), None, acc);
         let mut query: Vec<F> = match id {
             "nl" => vec![],
-            "nldoc" => match &self.reef_commit {
-                Some(ReefCommitment::Nlookup(dcs)) => vec![dcs.commit_doc_hash],
-                _ => panic!("commitment not found"),
-            },
+            "nldoc" => vec![self.reef_commit.unwrap().poly.commit_doc_hash],
             _ => panic!("weird tag"),
         };
         for cq in combined_qs {
@@ -1590,12 +1572,8 @@ mod tests {
                         Some(c.clone()),
                     );
 
-                    let reef_commit = gen_commitment(
-                        r1cs_converter.commit_type,
-                        r1cs_converter.udoc.clone(),
-                        &sc,
-                    );
-                    r1cs_converter.set_commitment(reef_commit.clone());
+                    let reef_commit = gen_commitment(r1cs_converter.udoc.clone(), &sc);
+                    r1cs_converter.reef_commit = Some(reef_commit);
 
                     assert_eq!(expected_match, r1cs_converter.is_match);
 
@@ -1659,14 +1637,11 @@ mod tests {
                         None => None,
                     };
                     //dummy hash check (hashes not generated at this level)
-                    let dummy_hash = match &reef_commit {
-                        ReefCommitment::HashChain(hcs) => Some(hcs.commit),
-                        _ => None,
-                    };
+                    let dummy_hash = reef_commit.unwrap().hash.commit;
 
                     final_clear_checks(
                         r1cs_converter.batching,
-                        reef_commit,
+                        reef_commit.unwrap(),
                         <G1 as Group>::Scalar::from(1), // dummy, not checked
                         &r1cs_converter.table,
                         r1cs_converter.udoc.len(),

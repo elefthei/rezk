@@ -9,10 +9,6 @@ use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
 
-#[cfg(all(not(windows), not(target_env = "musl")))]
-#[global_allocator]
-static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
-
 #[cfg(feature = "metrics")]
 use reef::metrics::{log, log::Component};
 
