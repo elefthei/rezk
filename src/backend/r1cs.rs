@@ -385,10 +385,29 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
     }
 
     pub fn to_circuit(&mut self) -> (ProverData, VerifierData) {
+        self.assertions Vec::new();
+        self.pub_inputs= Vec::new();
+
         match self.batching {
             JBatching::NaivePolys => self.to_polys(),
             JBatching::Nlookup => self.to_nlookup(),
         }
+    }
+
+    pub fn commitment_to_circuit(&mut self) -> (ProverData, VerifierData) {
+        self.assertions= Vec::new();
+        self.pub_inputs= Vec::new();
+
+        let mut char_lookups = vec![];
+        for c in 0..self.batch_size {
+            char_lookups.push(new_var(format!("char_{}", c)));
+        }
+
+        self.nlookup_gadget(char_lookups, self.udoc.len(), "nlcommit");
+    
+        //self.hashchain_commit(); don't need these orderings
+        
+        self.r1cs_conv()
     }
 
     // TODO batch size (1 currently)
