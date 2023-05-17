@@ -87,8 +87,8 @@ pub fn run_backend(
 
         #[cfg(feature = "metrics")]
         log::tic(Component::Compiler, "R1CS", "Commitment Generations");
-        let reef_commit = gen_commitment(r1cs_converter.udoc.clone(), &sc); // todo clone
-        r1cs_converter.reef_commit = Some(reef_commit.clone()); // todo clone
+        let reef_commit = ReefCommitment::gen_commitment(r1cs_converter.udoc.clone(), &sc); // todo clone
+        r1cs_converter.reef_commit = Some(reef_commit);
 
         #[cfg(feature = "metrics")]
         log::stop(Component::Compiler, "R1CS", "Commitment Generations");
@@ -766,70 +766,14 @@ fn verify(
     // state, char, opt<hash>, opt<v,q for eval>, opt<v,q for doc>, accepting
     let zn = res.unwrap().0;
 
-    // eval type, reef commitment, accepting state bool, table, doc, final_q, final_v, final_hash,
-    // final_doc_q, final_doc_v
-    match (eval_type, commit_type) {
-        (JBatching::NaivePolys, JCommit::HashChain) => {
-            final_clear_checks(
-                eval_type,
-                commit_type,
-                reef_commit,
-                zn[3],
-                &table, // clones in function?
-                doc_len,
-                None,
-                None,
-                Some(zn[2]),
-                None,
-                None,
-            );
-        }
-        (JBatching::NaivePolys, JCommit::Nlookup) => {
-            final_clear_checks(
-                eval_type,
-                commit_type,
-                reef_commit,
-                zn[3 + qd_len],
-                &table,
-                doc_len,
-                None,
-                None,
-                None,
-                Some(zn[2..(qd_len + 2)].to_vec()),
-                Some(zn[2 + qd_len]),
-            );
-        }
-        (JBatching::Nlookup, JCommit::HashChain) => {
-            final_clear_checks(
-                eval_type,
-                commit_type,
-                reef_commit,
-                zn[3 + q_len + 1],
-                &table,
-                doc_len,
-                Some(zn[3..(3 + q_len)].to_vec()),
-                Some(zn[3 + q_len]),
-                Some(zn[2]),
-                None,
-                None,
-            );
-        }
-        (JBatching::Nlookup, JCommit::Nlookup) => {
-            final_clear_checks(
-                eval_type,
-                commit_type,
-                reef_commit,
-                zn[2 + q_len + 1 + qd_len + 1],
-                &table,
-                doc_len,
-                Some(zn[1..(q_len + 1)].to_vec()),
-                Some(zn[q_len + 1]),
-                None,
-                Some(zn[(2 + q_len + 1)..(2 + q_len + 1 + qd_len)].to_vec()),
-                Some(zn[2 + q_len + 1 + qd_len]),
-            );
-        }
-    }
+    reef_commit.final_clear_checks(
+        eval_type,
+        commit_type,
+        zn,
+        &table, // clones in function?
+        doc_len,
+    );
+
     #[cfg(feature = "metrics")]
     log::stop(Component::Verifier, "Verification", "Final Clear Checks");
 }
