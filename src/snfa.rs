@@ -57,7 +57,7 @@ impl<A: Display, B: Display> Display for Either<A, B> {
     }
 }
 
-type Coord = (usize, NodeIndex<u32>);
+pub type Coord = (usize, NodeIndex<u32>);
 
 impl SNFA<char> {
     pub fn new<'a>(alphabet: &'a str, re: &Regex) -> Self {
@@ -174,7 +174,7 @@ impl SNFA<char> {
     }
 }
 
-type Moves = LinkedList<(Coord, usize)>;
+pub type Moves = LinkedList<(Coord, usize)>;
 
 impl<C: Clone + Eq + Ord + std::fmt::Debug + Display + std::hash::Hash + Sync> SNFA<C> {
     pub fn add_re(&mut self, i: usize, re: Regex) -> NodeIndex<u32> {
