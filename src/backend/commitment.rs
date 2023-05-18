@@ -103,6 +103,8 @@ impl ReefCommitment<<G1 as Group>::Scalar> {
 
             sponge.finish(acc).unwrap();
             i += 1;
+
+            println!("COMMIT NEXT HASH{:#?}", hash.clone());
         }
 
         let chain = HashCommitmentStruct {
@@ -240,7 +242,7 @@ impl ReefCommitment<<G1 as Group>::Scalar> {
         }
     }
 
-    fn final_clear_checks_selected(
+    pub(crate) fn final_clear_checks_selected(
         &self,
         eval_type: JBatching,
         commit_type: JCommit,

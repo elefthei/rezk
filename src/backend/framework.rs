@@ -19,8 +19,12 @@ pub fn run_backend(
     // make udoc (TODO not twice)
     let mut batch_doc = doc.clone();
 
-    batch_doc.push(EPSILON.clone()); // only required for nlookup, so need some additoinal work
-                                     // somewhere :(
+    if matches!(commit_doctype, Some(JCommit::Nlookup)) {
+        batch_doc.push(EPSILON.clone()); // only required for nlookup, so need some additoinal work
+                                         // somewhere :(
+
+        // TODO eof in hashing I think is best
+    }
 
     let mut usize_doc = vec![];
     for c in batch_doc.clone().into_iter() {
@@ -39,7 +43,7 @@ pub fn run_backend(
     log::tic(Component::Compiler, "Commitment", "Commitment Proof");
 
     // optional? - TODO threading?
-    run_consistency_proof(doc.clone(), reef_commit.clone());
+    //    run_consistency_proof(doc.clone(), reef_commit.clone());
 
     #[cfg(feature = "metrics")]
     log::stop(Component::Compiler, "Commitment", "Commitment Proof");
