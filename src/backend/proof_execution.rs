@@ -16,11 +16,6 @@ use crate::backend::{
 use crate::nfa::NFA;
 use circ::target::r1cs::wit_comp::StagedWitCompEvaluator;
 use circ::target::r1cs::ProverData;
-use generic_array::typenum;
-use neptune::{
-    sponge::vanilla::{Sponge, SpongeTrait},
-    Strength,
-};
 use nova_snark::{
     traits::{circuit::TrivialTestCircuit, Group},
     CompressedSNARK, PublicParams, RecursiveSNARK, StepCounterType, FINAL_EXTERNAL_COUNTER,
@@ -45,6 +40,20 @@ struct ProofInfo {
 #[cfg(feature = "metrics")]
 use crate::metrics::{log, log::Component};
 
+pub fn run_consistency_proof(doc: Vec<String>, reef_commit: ReefCommitment<<G1 as Group>::Scalar>) {
+    // nfa
+    let fake_nfa = unimplemented!();
+
+    run_proof(
+        fake_nfa,
+        doc,
+        Some(JBatching::NlookupCommit),
+        Some(JCommit::HashChain),
+        0,
+        reef_commit,
+    ); // always auto select (?)
+}
+
 // gen R1CS object, commitment, make step circuit for nova
 pub fn run_proof(
     nfa: NFA,
@@ -52,6 +61,7 @@ pub fn run_proof(
     batching_type: Option<JBatching>,
     commit_doctype: Option<JCommit>,
     temp_batch_size: usize, // this may be 0 if not overridden, only use to feed into R1CS object
+    reef_commit: ReefCommitment<<G1 as Group>::Scalar>,
 ) {
     let (sender, recv): (
         Sender<NFAStepCircuit<<G1 as Group>::Scalar>>,
@@ -62,8 +72,6 @@ pub fn run_proof(
 
     let solver_thread = thread::spawn(move || {
         // we do setup here to avoid unsafe passing
-        let sc = Sponge::<<G1 as Group>::Scalar, typenum::U4>::api_constants(Strength::Standard);
-
         #[cfg(feature = "metrics")]
         log::tic(
             Component::Compiler,
@@ -74,7 +82,7 @@ pub fn run_proof(
             &nfa,
             &doc,
             temp_batch_size,
-            sc.clone(),
+            reef_commit.pc.clone(),
             batching_type,
             commit_doctype,
         );
@@ -85,13 +93,7 @@ pub fn run_proof(
             "Optimization Selection, R1CS precomputations",
         );
 
-        #[cfg(feature = "metrics")]
-        log::tic(Component::Compiler, "R1CS", "Commitment Generations");
-        let reef_commit = ReefCommitment::gen_commitment(r1cs_converter.udoc.clone(), &sc); // todo clone
         r1cs_converter.reef_commit = Some(reef_commit);
-
-        #[cfg(feature = "metrics")]
-        log::stop(Component::Compiler, "R1CS", "Commitment Generations");
 
         #[cfg(feature = "metrics")]
         log::tic(Component::Compiler, "R1CS", "To Circuit");
@@ -726,9 +728,6 @@ fn verify(
     eval_type: JBatching,
     commit_type: JCommit,
 ) {
-    let q_len = logmn(table.len());
-    let qd_len = logmn(doc_len);
-
     let z0_secondary = vec![<G2 as Group>::Scalar::zero()];
 
     #[cfg(feature = "metrics")]
@@ -761,287 +760,4 @@ fn verify(
 
     #[cfg(feature = "metrics")]
     log::stop(Component::Verifier, "Verification", "Final Clear Checks");
-}
-
-#[cfg(test)]
-mod tests {
-
-    use crate::backend::framework::*;
-    use crate::backend::r1cs_helper::init;
-    use crate::nfa::NFA;
-    use crate::regex::Regex;
-
-    fn backend_test(
-        ab: String,
-        rstr: String,
-        doc: Vec<String>,
-        batching_type: Option<JBatching>,
-        commit_docype: Option<JCommit>,
-        batch_size: usize,
-    ) {
-        let r = Regex::new(&rstr);
-        let nfa = NFA::new(&ab[..], r);
-
-        init();
-        run_backend(
-            nfa.clone(),
-            doc.clone(),
-            batching_type.clone(),
-            commit_docype.clone(),
-            batch_size,
-        );
-    }
-
-    #[test]
-    fn e2e_q_overflow() {
-        backend_test(
-            "abcdefg".to_string(),
-            "gaa*bb*cc*dd*ee*f".to_string(),
-            ("gaaaaaabbbbbbccccccddddddeeeeeef".to_string())
-                .chars()
-                .map(|c| c.to_string())
-                .collect(),
-            Some(JBatching::Nlookup),
-            Some(JCommit::Nlookup),
-            33,
-        );
-    }
-
-    #[test]
-    fn e2e_substring() {
-        backend_test(
-            "ab".to_string(),
-            "bbb".to_string(),
-            ("aaabbbaaa".to_string())
-                .chars()
-                .map(|c| c.to_string())
-                .collect(),
-            Some(JBatching::Nlookup),
-            Some(JCommit::Nlookup),
-            2,
-        );
-
-        backend_test(
-            "ab".to_string(),
-            "bbbaaa".to_string(),
-            ("aaabbbaaa".to_string())
-                .chars()
-                .map(|c| c.to_string())
-                .collect(),
-            Some(JBatching::NaivePolys),
-            Some(JCommit::HashChain),
-            2,
-        );
-    }
-
-    #[test]
-    fn e2e_poly_hash() {
-        backend_test(
-            "ab".to_string(),
-            "^a*b*$".to_string(),
-            ("aaab".to_string())
-                .chars()
-                .map(|c| c.to_string())
-                .collect(),
-            Some(JBatching::NaivePolys),
-            Some(JCommit::HashChain),
-            0,
-        );
-        /*        backend_test(
-                  "ab".to_string(),
-                  "^ab*$".to_string(),
-                  &("abbbbbbb".to_string())
-                      .chars()
-                      .map(|c| c.to_string())
-                      .collect(),
-                  Some(JBatching::NaivePolys),
-                  Some(JCommit::HashChain),
-                  vec![0, 2],
-              );
-              backend_test(
-                  "ab".to_string(),
-                  "^a*$".to_string(),
-                  &("aaaaaaaaaaaaaaaa".to_string())
-                      .chars()
-                      .map(|c| c.to_string())
-                      .collect(),
-                  Some(JBatching::NaivePolys),
-                  Some(JCommit::HashChain),
-                  vec![0, 2, 5],
-              );
-        */
-    }
-
-    #[test]
-    fn e2e_poly_nl() {
-        backend_test(
-            "ab".to_string(),
-            "^a*b*$".to_string(),
-            ("aaab".to_string())
-                .chars()
-                .map(|c| c.to_string())
-                .collect(),
-            Some(JBatching::NaivePolys),
-            Some(JCommit::Nlookup),
-            0,
-        );
-        /*    backend_test(
-                "ab".to_string(),
-                "^a*b*$".to_string(),
-                &("aa".to_string()).chars().map(|c| c.to_string()).collect(),
-                Some(JBatching::NaivePolys),
-                Some(JCommit::Nlookup),
-                vec![0, 1, 2],
-            );
-            backend_test(
-                "ab".to_string(),
-                "^a*b*$".to_string(),
-                &("aaab".to_string())
-                    .chars()
-                    .map(|c| c.to_string())
-                    .collect(),
-                Some(JBatching::NaivePolys),
-                Some(JCommit::Nlookup),
-                vec![0, 2],
-            );
-            backend_test(
-                "ab".to_string(),
-                "^ab*$".to_string(),
-                &("abbbbbbb".to_string())
-                    .chars()
-                    .map(|c| c.to_string())
-                    .collect(),
-                Some(JBatching::NaivePolys),
-                Some(JCommit::Nlookup),
-                vec![0, 2, 5],
-            );
-            backend_test(
-                "ab".to_string(),
-                "^a*$".to_string(),
-                &("aaaaaaaaaaaaaaaa".to_string())
-                    .chars()
-                    .map(|c| c.to_string())
-                    .collect(),
-                Some(JBatching::NaivePolys),
-                Some(JCommit::Nlookup),
-                vec![0, 2, 5],
-            );
-        */
-    }
-
-    #[test]
-    fn e2e_nl_hash() {
-        backend_test(
-            "ab".to_string(),
-            "^a*b*$".to_string(),
-            ("aaab".to_string())
-                .chars()
-                .map(|c| c.to_string())
-                .collect(),
-            Some(JBatching::Nlookup),
-            Some(JCommit::HashChain),
-            0,
-        );
-        /*  backend_test(
-                "ab".to_string(),
-                "^a*b*$".to_string(),
-                &("aa".to_string()).chars().map(|c| c.to_string()).collect(),
-                Some(JBatching::Nlookup),
-                Some(JCommit::HashChain),
-                vec![0, 1, 2],
-            );
-            backend_test(
-                "ab".to_string(),
-                "^a*b*$".to_string(),
-                &("aaab".to_string())
-                    .chars()
-                    .map(|c| c.to_string())
-                    .collect(),
-                Some(JBatching::Nlookup),
-                Some(JCommit::HashChain),
-                vec![0, 2],
-            );
-            backend_test(
-                "ab".to_string(),
-                "^ab*$".to_string(),
-                &("abbbbbbb".to_string())
-                    .chars()
-                    .map(|c| c.to_string())
-                    .collect(),
-                Some(JBatching::Nlookup),
-                Some(JCommit::HashChain),
-                vec![0, 2],
-            );
-            backend_test(
-                "ab".to_string(),
-                "^a*$".to_string(),
-                &("aaaaaaaaaaaaaaaa".to_string())
-                    .chars()
-                    .map(|c| c.to_string())
-                    .collect(),
-                Some(JBatching::Nlookup),
-                Some(JCommit::HashChain),
-                vec![0, 2, 5],
-                // [1,2,3,4,5,6,7,8,
-            );
-        */
-    }
-
-    #[test]
-    fn e2e_nl_nl() {
-        backend_test(
-            "ab".to_string(),
-            "^a*b*$".to_string(),
-            ("aaab".to_string())
-                .chars()
-                .map(|c| c.to_string())
-                .collect(),
-            Some(JBatching::Nlookup),
-            Some(JCommit::Nlookup),
-            0,
-        );
-        /*  backend_test(
-                "ab".to_string(),
-                "^a*b*$".to_string(),
-                &("aa".to_string()).chars().map(|c| c.to_string()).collect(),
-                Some(JBatching::Nlookup),
-                Some(JCommit::Nlookup),
-                vec![0, 1, 2],
-            );
-            backend_test(
-                "ab".to_string(),
-                "^a*b*$".to_string(),
-                &("aaab".to_string())
-                    .chars()
-                    .map(|c| c.to_string())
-                    .collect(),
-                Some(JBatching::Nlookup),
-                Some(JCommit::Nlookup),
-                vec![0, 2],
-            );
-            backend_test(
-                "ab".to_string(),
-                "^ab*$".to_string(),
-                &("abbbbbbb".to_string())
-                    .chars()
-                    .map(|c| c.to_string())
-                    .collect(),
-                Some(JBatching::Nlookup),
-                Some(JCommit::Nlookup),
-                vec![0, 2, 5],
-            );
-            backend_test(
-                "ab".to_string(),
-                "^a*$".to_string(),
-                &("aaaaaaaaaaaaaaaa".to_string())
-                    .chars()
-                    .map(|c| c.to_string())
-                    .collect(),
-                Some(JBatching::Nlookup),
-                Some(JCommit::Nlookup),
-                vec![0, 2, 5],
-                // [1,2,3,4,5,6,7,8,
-            );
-        */
-    }
 }

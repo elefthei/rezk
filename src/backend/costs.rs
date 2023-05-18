@@ -8,8 +8,8 @@ static GLUE_NUMBER: usize = 11376 + 10347;
 #[derive(Debug, Clone, ValueEnum, Copy)]
 pub enum JBatching {
     NaivePolys,
-    //Plookup,
     Nlookup,
+    NlookupCommit,
 }
 
 #[derive(Debug, Clone, ValueEnum, Copy)]

@@ -78,7 +78,6 @@ pub enum GlueOpts<F: PrimeField> {
     NlHash((F, F, Vec<F>, F)),       // i, hash, q, v
     PolyNL((F, Vec<F>, F)),          // idx, doc_q, doc_v
     NlNl((Vec<F>, F, F, Vec<F>, F)), // q, v, idx, doc_q, doc_v
-    Commit((F, F, Vec<F>, F)),       // i, hash, q, v
 }
 
 #[derive(Clone, Debug)]
@@ -127,7 +126,6 @@ impl<F: PrimeField> NFAStepCircuit<F> {
             (GlueOpts::NlHash(_), GlueOpts::NlHash(_)) => {}
             (GlueOpts::PolyNL(_), GlueOpts::PolyNL(_)) => {}
             (GlueOpts::NlNl(_), GlueOpts::NlNl(_)) => {}
-            (GlueOpts::Commit(_), GlueOpts::Commit(_)) => {}
             (_, _) => {
                 panic!("glue I/O does not match");
             }

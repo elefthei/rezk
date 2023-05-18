@@ -7,16 +7,12 @@ type EE2 = nova_snark::provider::ipa_pc::EvaluationEngine<G2>;
 type S1 = nova_snark::spartan::RelaxedR1CSSNARK<G1, EE1>;
 type S2 = nova_snark::spartan::RelaxedR1CSSNARK<G2, EE2>;
 
+use crate::backend::r1cs_helper::verifier_mle_eval;
 use crate::backend::{
-    proof_execution::*
     costs::{logmn, JBatching, JCommit},
     nova::*,
-    r1cs::*,
 };
-use crate::nfa::NFA;
 use circ::cfg::cfg;
-use circ::target::r1cs::wit_comp::StagedWitCompEvaluator;
-use circ::target::r1cs::ProverData;
 use ff::{Field, PrimeField};
 use generic_array::typenum;
 use merlin::Transcript;
@@ -37,17 +33,13 @@ use nova_snark::{
         circuit::TrivialTestCircuit, commitment::*, AbsorbInROTrait, Group, ROConstantsTrait,
         ROTrait,
     },
-    CompressedSNARK, PublicParams, RecursiveSNARK, StepCounterType, FINAL_EXTERNAL_COUNTER,
 };
 use rand::rngs::OsRng;
 use rug::{integer::Order, ops::RemRounding, Integer};
-use std::sync::mpsc;
-use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
-use std::thread;
 
 #[derive(Debug, Clone)]
 pub struct ReefCommitment<F: PrimeField> {
+    pub pc: PoseidonConstants<F, typenum::U4>,
     pub chain: HashCommitmentStruct<F>,
     pub poly: DocCommitmentStruct<F>,
 }
@@ -69,19 +61,18 @@ pub struct DocCommitmentStruct<F> {
 }
 
 impl ReefCommitment<<G1 as Group>::Scalar> {
-    pub fn gen_commitment(
-        doc: Vec<usize>,
-        pc: &PoseidonConstants<<G1 as Group>::Scalar, typenum::U4>,
-    ) -> Self
+    pub fn gen_commitment(doc: Vec<usize>) -> Self
     where
         G1: Group<Base = <G2 as Group>::Scalar>,
         G2: Group<Base = <G1 as Group>::Scalar>,
     {
+        let pc = Sponge::<<G1 as Group>::Scalar, typenum::U4>::api_constants(Strength::Standard);
+
         //JCommit::HashChain => {
         let mut hash;
 
         // H_0 = Hash(0, r, 0)
-        let mut sponge = Sponge::new_with_constants(pc, Mode::Simplex);
+        let mut sponge = Sponge::new_with_constants(&pc, Mode::Simplex);
         let acc = &mut ();
 
         let parameter = IOPattern(vec![SpongeOp::Absorb(2), SpongeOp::Squeeze(1)]);
@@ -101,7 +92,7 @@ impl ReefCommitment<<G1 as Group>::Scalar> {
         let mut i = 0;
         // H_i = Hash(H_i-1, char, i)
         for c in doc.clone().into_iter() {
-            let mut sponge = Sponge::new_with_constants(pc, Mode::Simplex);
+            let mut sponge = Sponge::new_with_constants(&pc, Mode::Simplex);
             let acc = &mut ();
 
             let parameter = IOPattern(vec![SpongeOp::Absorb(3), SpongeOp::Squeeze(1)]);
@@ -164,127 +155,26 @@ impl ReefCommitment<<G1 as Group>::Scalar> {
         };
 
         return ReefCommitment {
+            pc,
             chain,
             poly: doc_commit,
         };
-    }
-
-    pub fn prove_consistency(&self) -> CompressedSNARK<G1, G2, C1, C2, S1, S2> {
-        // solve
-
-        // prove
-        // recursive SNARK
-        let mut recursive_snark: Option<RecursiveSNARK<G1, G2, C1, C2>> = None;
-        // trivial circuit
-        let circuit_secondary = TrivialTestCircuit::new(StepCounterType::External);
-        let z0_secondary = vec![<G2 as Group>::Scalar::zero()];
-
-        for i in 0..proof_info.num_steps {
-            #[cfg(feature = "metrics")]
-            let test = format!("step {}", i);
-
-            // blocks until we receive first witness
-            let circuit_primary = recv.recv().unwrap();
-
-            #[cfg(feature = "metrics")]
-            log::tic(Component::Prover, &test, "prove step");
-
-            let result = RecursiveSNARK::prove_step(
-                &proof_info.pp.lock().unwrap(),
-                recursive_snark,
-                circuit_primary.clone(),
-                circuit_secondary.clone(),
-                proof_info.z0_primary.clone(),
-                z0_secondary.clone(),
-            );
-            println!("prove step {:#?}", i);
-
-            #[cfg(feature = "metrics")]
-            log::stop(Component::Prover, &test, "prove step");
-
-            // verify recursive - TODO we can get rid of this verify once everything works
-            // PLEASE LEAVE this here for Jess for now - immensely helpful with debugging
-            let res = result.clone().unwrap().verify(
-                &proof_info.pp.lock().unwrap(),
-                FINAL_EXTERNAL_COUNTER,
-                proof_info.z0_primary.clone(),
-                z0_secondary.clone(),
-            );
-            println!("Recursive res: {:#?}", res);
-
-            assert!(res.is_ok()); // TODO delete
-
-            recursive_snark = Some(result.unwrap());
-        }
-
-        assert!(recursive_snark.is_some());
-        let recursive_snark = recursive_snark.unwrap();
-
-        // compressed SNARK
-        #[cfg(feature = "metrics")]
-        log::tic(Component::Prover, "Proof", "Compressed SNARK");
-        let res = CompressedSNARK::<_, _, _, _, S1, S2>::prove(
-            &proof_info.pp.lock().unwrap(),
-            &recursive_snark,
-        );
-        #[cfg(feature = "metrics")]
-        log::stop(Component::Prover, "Proof", "Compressed SNARK");
-
-        assert!(res.is_ok());
-
-        let compressed_snark = res.unwrap();
-
-        #[cfg(feature = "metrics")]
-        log::space(
-            Component::Prover,
-            "Proof Size",
-            "Compressed SNARK size",
-            serde_json::to_string(&compressed_snark).unwrap().len(),
-        );
-    }
-
-    pub fn verify_consistency(
-        &self,
-        consistency_proof: CompressedSNARK<G1, G2, C1, C2, S1, S2>,
-        z0_primary: Vec<<G1 as Group>::Scalar>,
-        pp: Arc<Mutex<PublicParams<G1, G2, C1, C2>>>,
-    ) {
-        let z0_secondary = vec![<G2 as Group>::Scalar::zero()];
-
-        #[cfg(feature = "metrics")]
-        log::tic(
-            Component::Verifier,
-            "Verification",
-            "Commitment Consistency Verification",
-        );
-
-        let res = compressed_snark.verify(
-            &pp.lock().unwrap(),
-            FINAL_EXTERNAL_COUNTER,
-            z0_primary,
-            z0_secondary,
-        );
-        #[cfg(feature = "metrics")]
-        log::stop(
-            Component::Verifier,
-            "Verification",
-            "Commitment Consistency Verification",
-        );
-
-        assert!(res.is_ok());
     }
 
     pub fn final_clear_checks(
         &self,
         eval_type: JBatching,
         commit_type: JCommit,
-        z: Vec<<G1 as Group>::Scalar>,
+        zn: Vec<<G1 as Group>::Scalar>,
         table: &Vec<Integer>,
         doc_len: usize,
     ) {
+        let q_len = logmn(table.len());
+        let qd_len = logmn(doc_len);
+
         match (eval_type, commit_type) {
             (JBatching::NaivePolys, JCommit::HashChain) => {
-                reef_commit.final_clear_checks_selected(
+                self.final_clear_checks_selected(
                     eval_type,
                     commit_type,
                     zn[3],
@@ -298,10 +188,9 @@ impl ReefCommitment<<G1 as Group>::Scalar> {
                 );
             }
             (JBatching::NaivePolys, JCommit::Nlookup) => {
-                reef_commit.final_clear_checks_selected(
+                self.final_clear_checks_selected(
                     eval_type,
                     commit_type,
-                    reef_commit,
                     zn[3 + qd_len],
                     &table,
                     doc_len,
@@ -313,10 +202,9 @@ impl ReefCommitment<<G1 as Group>::Scalar> {
                 );
             }
             (JBatching::Nlookup, JCommit::HashChain) => {
-                reef_commit.final_clear_checks_selected(
+                self.final_clear_checks_selected(
                     eval_type,
                     commit_type,
-                    reef_commit,
                     zn[3 + q_len + 1],
                     &table,
                     doc_len,
@@ -328,10 +216,9 @@ impl ReefCommitment<<G1 as Group>::Scalar> {
                 );
             }
             (JBatching::Nlookup, JCommit::Nlookup) => {
-                reef_commit.final_clear_checks_selected(
+                self.final_clear_checks_selected(
                     eval_type,
                     commit_type,
-                    reef_commit,
                     zn[2 + q_len + 1 + qd_len + 1],
                     &table,
                     doc_len,
@@ -342,6 +229,7 @@ impl ReefCommitment<<G1 as Group>::Scalar> {
                     Some(zn[2 + q_len + 1 + qd_len]),
                 );
             }
+            (JBatching::NlookupCommit, _) => unimplemented!(),
         }
     }
 

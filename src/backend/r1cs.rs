@@ -391,10 +391,11 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         match self.batching {
             JBatching::NaivePolys => self.to_polys(),
             JBatching::Nlookup => self.to_nlookup(),
+            JBatching::NlookupCommit => self.commitment_to_circuit(),
         }
     }
 
-    pub fn commitment_to_circuit(&mut self) -> (ProverData, VerifierData) {
+    fn commitment_to_circuit(&mut self) -> (ProverData, VerifierData) {
         self.assertions = Vec::new();
         self.pub_inputs = Vec::new();
 
@@ -405,7 +406,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
 
         self.nlookup_gadget(char_lookups, self.udoc.len(), "nlcommit");
 
-        self.q_ordering("nlcommit");
+        self.q_ordering_circuit("nlcommit");
 
         self.r1cs_conv()
     }
@@ -739,7 +740,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         }
     }
     fn nlookup_doc_commit(&mut self) {
-        self.q_ordering("nldoc");
+        self.q_ordering_circuit("nldoc");
 
         // lookups and nl circuit
         let mut char_lookups = vec![];
