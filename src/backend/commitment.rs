@@ -1,11 +1,5 @@
 type G1 = pasta_curves::pallas::Point;
 type G2 = pasta_curves::vesta::Point;
-type C1 = NFAStepCircuit<<G1 as Group>::Scalar>;
-type C2 = TrivialTestCircuit<<G2 as Group>::Scalar>;
-type EE1 = nova_snark::provider::ipa_pc::EvaluationEngine<G1>;
-type EE2 = nova_snark::provider::ipa_pc::EvaluationEngine<G2>;
-type S1 = nova_snark::spartan::RelaxedR1CSSNARK<G1, EE1>;
-type S2 = nova_snark::spartan::RelaxedR1CSSNARK<G2, EE2>;
 
 use crate::backend::r1cs_helper::verifier_mle_eval;
 use crate::backend::{
@@ -29,10 +23,7 @@ use nova_snark::{
         pedersen::{CommitmentGens, CompressedCommitment},
         poseidon::{PoseidonConstantsCircuit, PoseidonRO},
     },
-    traits::{
-        circuit::TrivialTestCircuit, commitment::*, AbsorbInROTrait, Group, ROConstantsTrait,
-        ROTrait,
-    },
+    traits::{commitment::*, AbsorbInROTrait, Group, ROConstantsTrait, ROTrait},
 };
 use rand::rngs::OsRng;
 use rug::{integer::Order, ops::RemRounding, Integer};
@@ -229,7 +220,23 @@ impl ReefCommitment<<G1 as Group>::Scalar> {
                     Some(zn[2 + q_len + 1 + qd_len]),
                 );
             }
-            (JBatching::NlookupCommit, _) => unimplemented!(),
+            (JBatching::NlookupCommit, JCommit::HashChain) => {
+                self.final_clear_checks_selected(
+                    eval_type,
+                    commit_type,
+                    zn[3 + q_len + 1],
+                    &table,
+                    doc_len,
+                    None,
+                    None,
+                    Some(zn[2]),
+                    Some(zn[3..(3 + q_len)].to_vec()),
+                    Some(zn[3 + q_len]),
+                );
+            }
+            (_, _) => {
+                panic!("this is a strange combination of eval/commit types that shouldn't be used");
+            }
         }
     }
 
@@ -250,39 +257,50 @@ impl ReefCommitment<<G1 as Group>::Scalar> {
         assert_eq!(accepting_state, <G1 as Group>::Scalar::from(1));
 
         // nlookup eval T check
-        match (final_q, final_v) {
-            (Some(q), Some(v)) => {
-                // T is in the clear for this case
-                match eval_type {
-                    JBatching::NaivePolys => {
-                        panic!(
-                        "naive poly evaluation used, but running claim provided for verification"
-                    );
-                    }
-                    JBatching::Nlookup => {
-                        let mut q_i = vec![];
-                        for f in q {
-                            q_i.push(Integer::from_digits(f.to_repr().as_ref(), Order::Lsf));
-                        }
-                        // TODO mle eval over F
-                        assert_eq!(
-                            verifier_mle_eval(table, &q_i),
-                            (Integer::from_digits(v.to_repr().as_ref(), Order::Lsf))
-                        );
-                    }
+        match eval_type {
+            JBatching::NaivePolys => {
+                assert!(
+                    final_q.is_none() && final_v.is_none(),
+                    "naive poly evaluation used, but running claim provided for verification"
+                );
+            }
+            JBatching::Nlookup => {
+                assert!(
+                    final_q.is_some() && final_v.is_some(),
+                    "nlookup evaluation used, but no running claim provided for verification"
+                );
+                let q = final_q.unwrap();
+                let v = final_v.unwrap();
+
+                let mut q_i = vec![];
+                for f in q {
+                    q_i.push(Integer::from_digits(f.to_repr().as_ref(), Order::Lsf));
                 }
+                // TODO mle eval over F
+                assert_eq!(
+                    verifier_mle_eval(table, &q_i),
+                    (Integer::from_digits(v.to_repr().as_ref(), Order::Lsf))
+                );
             }
-            (Some(_), None) => {
-                panic!("only half of running claim recieved");
-            }
-            (None, Some(_)) => {
-                panic!("only half of running claim recieved");
-            }
-            (None, None) => {
-                if matches!(eval_type, JBatching::Nlookup) {
-                    panic!(
-                        "nlookup evaluation used, but no running claim provided for verification"
-                    );
+            JBatching::NlookupCommit => {
+                assert!(
+                    final_q.is_none() && final_v.is_none(),
+                    "commit evaluation used, but 'nfa' running claim provided for verification"
+                );
+                match (&final_doc_q, &final_doc_v) {
+                    (Some(q), Some(v)) => {
+                        let doc_ext_len = doc_len.next_power_of_two();
+
+                        // right form for inner product
+                        let q_rev = q.clone().into_iter().rev().collect(); // todo get rid clone
+                        let q_ext = q_to_mle_q(&q_rev, doc_ext_len);
+
+                        // Doc is commited to in this case
+                        assert!(proof_dot_prod(self.poly.clone(), q_ext, v.clone()).is_ok());
+                    }
+                    (_, _) => {
+                        panic!("commit evaluation used, but no running claim provided for verification");
+                    }
                 }
             }
         }
@@ -291,7 +309,6 @@ impl ReefCommitment<<G1 as Group>::Scalar> {
         // hash chain commitment check
         match commit_type {
             JCommit::HashChain => {
-                // todo substring
                 assert_eq!(self.chain.commit, final_hash.unwrap());
             }
             JCommit::Nlookup => {
@@ -304,15 +321,9 @@ impl ReefCommitment<<G1 as Group>::Scalar> {
                         let q_ext = q_to_mle_q(&q_rev, doc_ext_len);
 
                         // Doc is commited to in this case
-                        assert!(proof_dot_prod(self.poly, q_ext, v).is_ok());
+                        assert!(proof_dot_prod(self.poly.clone(), q_ext, v).is_ok());
                     }
-                    (Some(_), None) => {
-                        panic!("only half of running claim recieved");
-                    }
-                    (None, Some(_)) => {
-                        panic!("only half of running claim recieved");
-                    }
-                    (None, None) => {
+                    (_, _) => {
                         panic!(
                     "nlookup doc commitment used, but no running claim provided for verification"
                 );

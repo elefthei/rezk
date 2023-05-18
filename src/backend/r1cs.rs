@@ -19,7 +19,7 @@ pub struct R1CS<'a, F: PrimeField> {
     pub table: Vec<Integer>,
     pub batching: JBatching,
     pub commit_type: JCommit,
-    pub reef_commit: Option<ReefCommitment<F>>,
+    pub reef_commit: ReefCommitment<F>,
     assertions: Vec<Term>,
     // perhaps a misleading name, by "public inputs", we mean "circ leaves these wires exposed from
     // the black box, and will not optimize them away"
@@ -41,7 +41,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         nfa: &'a NFA,
         doc: &Vec<String>,
         batch_size: usize,
-        pcs: PoseidonConstants<F, typenum::U4>,
+        reef_commit: ReefCommitment<F>, //pcs: PoseidonConstants<F, typenum::U4>,
         batch_override: Option<JBatching>,
         commit_override: Option<JCommit>,
     ) -> Self {
@@ -162,12 +162,13 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
             int_doc.push(Integer::from(u));
         }
 
+        let pcs = reef_commit.pc.clone();
         Self {
             nfa,
             table,    // TODO fix else
             batching, // TODO
             commit_type: commit,
-            reef_commit: None,
+            reef_commit,
             assertions: Vec::new(),
             pub_inputs: Vec::new(),
             batch_size: sel_batch_size,
@@ -853,6 +854,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
                 prev_doc_running_claim_v,
                 prev_doc_idx,
             ),
+            JBatching::NlookupCommit => unimplemented!(),
         }
     }
 
@@ -1143,7 +1145,7 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         sponge.start(IOPattern(pattern), None, acc);
         let mut query: Vec<F> = match id {
             "nl" => vec![],
-            "nldoc" => vec![self.reef_commit.unwrap().poly.commit_doc_hash],
+            "nldoc" => vec![self.reef_commit.poly.commit_doc_hash],
             _ => panic!("weird tag"),
         };
         for cq in combined_qs {

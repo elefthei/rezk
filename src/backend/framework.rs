@@ -1,20 +1,9 @@
-type G1 = pasta_curves::pallas::Point;
-type G2 = pasta_curves::vesta::Point;
-type C1 = NFAStepCircuit<<G1 as Group>::Scalar>;
-type C2 = TrivialTestCircuit<<G2 as Group>::Scalar>;
-type EE1 = nova_snark::provider::ipa_pc::EvaluationEngine<G1>;
-type EE2 = nova_snark::provider::ipa_pc::EvaluationEngine<G2>;
-type S1 = nova_snark::spartan::RelaxedR1CSSNARK<G1, EE1>;
-type S2 = nova_snark::spartan::RelaxedR1CSSNARK<G2, EE2>;
-
 use crate::backend::{
     commitment::*,
     costs::{logmn, JBatching, JCommit},
-    nova::*,
     proof_execution::*,
 };
 use crate::nfa::{EPSILON, NFA};
-use nova_snark::traits::{circuit::TrivialTestCircuit, Group};
 
 #[cfg(feature = "metrics")]
 use crate::metrics::{log, log::Component};
@@ -50,7 +39,7 @@ pub fn run_backend(
     log::tic(Component::Compiler, "Commitment", "Commitment Proof");
 
     // optional? - TODO threading?
-    run_consistency_proof(doc, reef_commit);
+    run_consistency_proof(doc.clone(), reef_commit.clone());
 
     #[cfg(feature = "metrics")]
     log::stop(Component::Compiler, "Commitment", "Commitment Proof");

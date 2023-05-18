@@ -82,7 +82,7 @@ pub fn run_proof(
             &nfa,
             &doc,
             temp_batch_size,
-            reef_commit.pc.clone(),
+            reef_commit.clone(),
             batching_type,
             commit_doctype,
         );
@@ -92,8 +92,6 @@ pub fn run_proof(
             "R1CS",
             "Optimization Selection, R1CS precomputations",
         );
-
-        r1cs_converter.reef_commit = Some(reef_commit);
 
         #[cfg(feature = "metrics")]
         log::tic(Component::Compiler, "R1CS", "To Circuit");
@@ -163,7 +161,7 @@ fn setup<'a>(
                 )),
             ]
         }
-        (JBatching::Nlookup, JCommit::HashChain) => {
+        (JBatching::Nlookup | JBatching::NlookupCommit, JCommit::HashChain) => {
             let zero = <G1 as Group>::Scalar::from(0);
 
             let q = vec![<G1 as Group>::Scalar::from(0); q_len];
@@ -202,6 +200,9 @@ fn setup<'a>(
                 )),
                 GlueOpts::NlNl((q, v, q_idx, doc_q, doc_v)),
             ]
+        }
+        (JBatching::NlookupCommit, JCommit::Nlookup) => {
+            panic!("bad eval/commit type combo");
         }
     };
 
@@ -266,8 +267,8 @@ fn setup<'a>(
     // this variable could be two different types of things, which is potentially dicey, but
     // literally whatever
     let blind = match r1cs_converter.commit_type {
-        JCommit::HashChain => r1cs_converter.reef_commit.unwrap().chain.blind,
-        JCommit::Nlookup => r1cs_converter.reef_commit.unwrap().poly.commit_doc_hash,
+        JCommit::HashChain => r1cs_converter.reef_commit.chain.blind,
+        JCommit::Nlookup => r1cs_converter.reef_commit.poly.commit_doc_hash,
     };
     // TODO only do this for HC
     let prev_hash = match r1cs_converter.commit_type {
@@ -289,7 +290,7 @@ fn setup<'a>(
                 ),
             ]
         }
-        (JBatching::Nlookup, JCommit::HashChain) => {
+        (JBatching::Nlookup | JBatching::NlookupCommit, JCommit::HashChain) => {
             let mut z = vec![
                 <G1 as Group>::Scalar::from(current_state as u64),
                 <G1 as Group>::Scalar::from(r1cs_converter.substring.0 as u64), //<G1 as Group>::Scalar::from(0), //nfa.ab_to_num(&doc[0]) as u64),
@@ -332,6 +333,9 @@ fn setup<'a>(
             ));
             z
         }
+        (JBatching::NlookupCommit, JCommit::Nlookup) => {
+            panic!("bad eval/commit type combo");
+        }
     };
 
     let num_steps = ceil_div(
@@ -356,8 +360,8 @@ fn solve<'a>(
     // this variable could be two different types of things, which is potentially dicey, but
     // literally whatever
     let blind = match r1cs_converter.commit_type {
-        JCommit::HashChain => r1cs_converter.reef_commit.unwrap().chain.blind,
-        JCommit::Nlookup => r1cs_converter.reef_commit.unwrap().poly.commit_doc_hash,
+        JCommit::HashChain => r1cs_converter.reef_commit.chain.blind,
+        JCommit::Nlookup => r1cs_converter.reef_commit.poly.commit_doc_hash,
     };
     // TODO put this in glue
 
@@ -444,7 +448,7 @@ fn solve<'a>(
                 log::stop(Component::Solver, &test, "calculate hash");
                 g
             }
-            (JBatching::Nlookup, JCommit::HashChain) => {
+            (JBatching::Nlookup | JBatching::NlookupCommit, JCommit::HashChain) => {
                 #[cfg(feature = "metrics")]
                 log::tic(Component::Solver, &test, "calculate hash");
                 let next_hash = r1cs_converter.prover_calc_hash(
@@ -575,6 +579,9 @@ fn solve<'a>(
                     GlueOpts::NlNl((q, v, q_idx, doc_q, doc_v)),
                     GlueOpts::NlNl((next_q, next_v, next_q_idx, next_doc_q, next_doc_v)),
                 ]
+            }
+            (JBatching::NlookupCommit, JCommit::Nlookup) => {
+                panic!("bad eval/commit type combo");
             }
         };
 

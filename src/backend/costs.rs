@@ -244,7 +244,8 @@ pub fn full_round_cost_model_nohash<'a>(
         JBatching::NaivePolys => {
             naive_cost_model_nohash(nfa, batch_size, is_match, doc_len, commit_type)
         }
-        JBatching::Nlookup => {
+        JBatching::Nlookup | JBatching::NlookupCommit => {
+            // TODO
             nlookup_cost_model_nohash(nfa, batch_size, is_match, doc_len, commit_type)
         }
     };
@@ -263,7 +264,7 @@ pub fn full_round_cost_model<'a>(
         JBatching::NaivePolys => {
             naive_cost_model_nohash(nfa, batch_size, is_match, doc_len, commit_type)
         }
-        JBatching::Nlookup => {
+        JBatching::Nlookup | JBatching::NlookupCommit => {
             nlookup_cost_model_hash(nfa, batch_size, is_match, doc_len, commit_type)
         } //      JBatching::Plookup => plookup_cost_model_hash(nfa, batch_size),
     };
