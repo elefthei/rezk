@@ -379,9 +379,9 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         circ_r1cs = reduce_linearities(circ_r1cs, cfg());
 
         // LEAVE THIS IN HERE FOR DEBUGGING >:(
-        /*for r in circ_r1cs.constraints().clone() {
+        for r in circ_r1cs.constraints().clone() {
             println!("{:#?}", circ_r1cs.format_qeq(&r));
-        }*/
+        }
 
         circ_r1cs.finalize(&final_cs)
     }
@@ -1034,6 +1034,8 @@ impl<'a, F: PrimeField> R1CS<'a, F> {
         Option<isize>,
     ) {
         let mut wits = FxHashMap::default();
+        let next_state = 0;
+        let start_epsilons = 0; // TODO?
 
         // use the doc commit witnesses
         assert!(running_q.is_some() || batch_num == 0);

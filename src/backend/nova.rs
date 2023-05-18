@@ -74,7 +74,7 @@ fn get_modulus<F: Field + PrimeField>() -> Integer {
 
 #[derive(Clone, Debug)]
 pub enum GlueOpts<F: PrimeField> {
-    PolyHash((F, F)),                // i, hash
+    PolyHash((F, F)),                // TODO elim this i               // i, hash
     NlHash((F, F, Vec<F>, F)),       // i, hash, q, v
     PolyNL((F, Vec<F>, F)),          // idx, doc_q, doc_v
     NlNl((Vec<F>, F, F, Vec<F>, F)), // q, v, idx, doc_q, doc_v
@@ -1461,8 +1461,8 @@ where
                     self.commit_blind,
                 )?;
 
+                println!("last i {:#?}", last_i.clone().unwrap().get_value());
                 out.push(last_state.unwrap());
-
                 for qv in alloc_rc {
                     out.push(qv.unwrap()); // better way to do this?
                 }

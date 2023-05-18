@@ -490,15 +490,9 @@ fn solve<'a>(
                 g
             }
             (JBatching::NaivePolys, JCommit::Nlookup) => {
-                let q_idx = if r1cs_converter.substring.0 + i != 0 {
-                    <G1 as Group>::Scalar::from(
-                        (r1cs_converter.substring.0 + ((i) * r1cs_converter.batch_size) - 1) as u64,
-                    )
-                } else if prev_doc_idx.is_none() {
-                    <G1 as Group>::Scalar::from(0) - <G1 as Group>::Scalar::from(1)
-                } else {
-                    <G1 as Group>::Scalar::from((prev_doc_idx.unwrap()) as u64)
-                };
+                let q_idx = <G1 as Group>::Scalar::from(
+                    (r1cs_converter.substring.0 + i * r1cs_converter.batch_size) as u64,
+                );
                 println!("Q IDX {:#?}", q_idx);
 
                 let doc_q = match doc_running_q {
@@ -511,7 +505,10 @@ fn solve<'a>(
                     None => <G1 as Group>::Scalar::from(r1cs_converter.udoc[0] as u64),
                 };
 
-                let next_q_idx = <G1 as Group>::Scalar::from(next_doc_idx.unwrap() as u64);
+                let next_q_idx = <G1 as Group>::Scalar::from(
+                    (r1cs_converter.substring.0 + ((i + 1) * r1cs_converter.batch_size)) as u64,
+                );
+                //<G1 as Group>::Scalar::from(next_doc_idx.unwrap() as u64);
 
                 println!("NEXT Q IDX {:#?}", next_q_idx);
                 let next_doc_q = next_doc_running_q
@@ -545,17 +542,13 @@ fn solve<'a>(
                     .collect();
                 let next_v = int_to_ff(next_running_v.clone().unwrap());
 
-                let q_idx = if r1cs_converter.substring.0 + i != 0 {
-                    <G1 as Group>::Scalar::from(
-                        (r1cs_converter.substring.0 + ((i) * r1cs_converter.batch_size) - 1) as u64,
-                    )
-                } else if prev_doc_idx.is_none() {
-                    <G1 as Group>::Scalar::from(0) - <G1 as Group>::Scalar::from(1)
-                } else {
-                    <G1 as Group>::Scalar::from((prev_doc_idx.unwrap()) as u64)
-                };
+                let q_idx = <G1 as Group>::Scalar::from(
+                    (r1cs_converter.substring.0 + i * r1cs_converter.batch_size) as u64,
+                );
 
-                let next_q_idx = <G1 as Group>::Scalar::from(next_doc_idx.unwrap() as u64);
+                let next_q_idx = <G1 as Group>::Scalar::from(
+                    (r1cs_converter.substring.0 + ((i + 1) * r1cs_converter.batch_size)) as u64,
+                ); //<G1 as Group>::Scalar::from(next_doc_idx.unwrap() as u64);
 
                 println!("Q IDX {:#?}", q_idx);
                 println!("NEXT Q IDX {:#?}", next_q_idx);
