@@ -1,28 +1,28 @@
 use itertools::Itertools;
-use std::collections::{HashSet, HashMap, BTreeSet, LinkedList};
+use std::collections::{BTreeSet, HashMap, HashSet, LinkedList};
 use std::process::Command;
 
-use petgraph::Graph;
-use petgraph::graph::NodeIndex;
 use petgraph::dot::Dot;
+use petgraph::graph::NodeIndex;
 use petgraph::visit::*;
+use petgraph::Graph;
 
 use std::fs::File;
 use std::io::BufWriter;
 use std::result::Result;
 
-use crate::regex::{Regex, RegexF};
 use crate::nfa::EPSILON;
+use crate::regex::{Regex, RegexF};
 use rayon::iter::*;
 
 use core::fmt;
-use core::fmt::{Display,Formatter};
+use core::fmt::{Display, Formatter};
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Skip {
     Offset(usize),
     Choice(BTreeSet<usize>),
-    Star
+    Star,
 }
 
 impl Skip {
@@ -41,9 +41,10 @@ impl Skip {
     pub fn then(&self, a: &Skip) -> Skip {
         match (self, a) {
             (Skip::Offset(0), _) => a.clone(),
-            (Skip::Offset(i), Skip::Offset(j)) => Skip::Offset(i+j),
-            (Skip::Offset(i), Skip::Choice(x)) | (Skip::Choice(x), Skip::Offset(i)) =>
-                Skip::Choice(x.into_iter().map(|x| x + i).collect()),
+            (Skip::Offset(i), Skip::Offset(j)) => Skip::Offset(i + j),
+            (Skip::Offset(i), Skip::Choice(x)) | (Skip::Choice(x), Skip::Offset(i)) => {
+                Skip::Choice(x.into_iter().map(|x| x + i).collect())
+            }
             (Skip::Choice(x), Skip::Choice(y)) => {
                 let mut s = BTreeSet::new();
                 for i in x.into_iter() {
@@ -52,8 +53,8 @@ impl Skip {
                     }
                 }
                 Skip::Choice(s)
-            },
-            (Skip::Star, _) | (_, Skip::Star) => Skip::Star
+            }
+            (Skip::Star, _) | (_, Skip::Star) => Skip::Star,
         }
     }
 }
@@ -64,13 +65,13 @@ impl fmt::Display for Skip {
             Skip::Offset(u) if *u == 0 => write!(f, "ε"),
             Skip::Offset(u) => write!(f, "+{}", u),
             Skip::Choice(us) => write!(f, "{:?}", us),
-            Skip::Star => write!(f, "*")
+            Skip::Star => write!(f, "*"),
         }
     }
 }
 
 #[derive(Debug, Clone, Hash, PartialOrd, Ord, PartialEq, Eq)]
-pub struct Either<A, B>(Result<A, B>);
+pub struct Either<A, B>(pub Result<A, B>);
 
 impl<A, B> Either<A, B> {
     fn left(a: A) -> Self {
@@ -88,7 +89,7 @@ impl<A, B> Either<A, B> {
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Quant<A>(A, bool);
+pub struct Quant<A>(pub A, bool);
 
 impl<A: Clone> Quant<A> {
     fn and(a: A) -> Self {
@@ -112,7 +113,7 @@ impl<A: Display, B: Display> Display for Either<A, B> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self.0 {
             Ok(ref a) => write!(f, "{}", a),
-            Err(ref b) => write!(f, "{}", b)
+            Err(ref b) => write!(f, "{}", b),
         }
     }
 }
@@ -137,7 +138,6 @@ impl Display for Quant<NodeIndex<u32>> {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct SAFA<C: Clone> {
     /// Alphabet
@@ -161,8 +161,11 @@ impl SAFA<char> {
 
     /// Add a regex to position [from] (an Or by default)
     fn add_skip(&mut self, n: NodeIndex<u32>, skip: Skip, q_c: &Regex) {
-        if let Some(n_c) = self.g.node_indices().find(|i|
-                                &self.g[*i].get() == q_c && self.g[*i].is_or()) {
+        if let Some(n_c) = self
+            .g
+            .node_indices()
+            .find(|i| &self.g[*i].get() == q_c && self.g[*i].is_or())
+        {
             self.g.add_edge(n, n_c, Either::right(skip));
         } else {
             // Add to graph if not already there
@@ -177,29 +180,36 @@ impl SAFA<char> {
 
     /// Add derivative of a node in the graph
     fn add_derivatives(&mut self, from: NodeIndex<u32>, q: &Regex) {
-      let n =
-        if let Some(n) = self.g.node_indices().find(|i| self.g[*i] == Quant::or(q.clone())) {
+        let n = if let Some(n) = self
+            .g
+            .node_indices()
+            .find(|i| self.g[*i] == Quant::or(q.clone()))
+        {
             if n != from {
                 self.g.add_edge(from, n, SAFA::epsilon());
             }
             n
         } else {
             if self.g[from].is_or() {
-              from
+                from
             } else {
-              // Add an OR node to graph if not already there
-              let n = self.g.add_node(Quant::or(q.clone()));
-              self.g.add_edge(n, n, SAFA::epsilon());
-              // Reflexive step
-              self.g.add_edge(from, n, SAFA::epsilon());
-              n
+                // Add an OR node to graph if not already there
+                let n = self.g.add_node(Quant::or(q.clone()));
+                self.g.add_edge(n, n, SAFA::epsilon());
+                // Reflexive step
+                self.g.add_edge(from, n, SAFA::epsilon());
+                n
             }
         };
 
         // Take all the single character steps
         for c in self.ab.clone().iter() {
             let q_c = q.deriv(&c);
-            if let Some(n_c) = self.g.node_indices().find(|i| self.g[*i] == Quant::or(q_c.clone())) {
+            if let Some(n_c) = self
+                .g
+                .node_indices()
+                .find(|i| self.g[*i] == Quant::or(q_c.clone()))
+            {
                 self.g.add_edge(n, n_c, Either::left(*c));
             } else {
                 // Add to graph if not already there
@@ -223,52 +233,59 @@ impl SAFA<char> {
     fn add(&mut self, from: NodeIndex<u32>, q: &Regex) {
         match *q.0 {
             // .*
-            RegexF::Star(ref a) if a.accepts_any(&self.ab) =>
-              self.add_skip(from, Skip::Star, &Regex::nil()),
+            RegexF::Star(ref a) if a.accepts_any(&self.ab) => {
+                self.add_skip(from, Skip::Star, &Regex::nil())
+            }
             // .{i,j}
-            RegexF::Range(ref a, x, y) if a.accepts_any(&self.ab) && !a.nullable() =>
-              self.add_skip(from, Skip::range(x, y), &Regex::nil()),
+            RegexF::Range(ref a, x, y) if a.accepts_any(&self.ab) && !a.nullable() => {
+                self.add_skip(from, Skip::range(x, y), &Regex::nil())
+            }
             // (?=r)
             RegexF::Lookahead(ref a) => {
-              self.to_and(from);
-              self.add_skip(from, Skip::epsilon(), a)
-            },
+                self.to_and(from);
+                self.add_skip(from, Skip::epsilon(), a)
+            }
             // (r | r')
             RegexF::Alt(_, _) => {
-              self.to_or(from);
-              q.to_alt_list()
-               .into_iter()
-               .for_each(|q_c| self.add_skip(from, Skip::epsilon(), &q_c));
-            },
+                self.to_or(from);
+                q.to_alt_list()
+                    .into_iter()
+                    .for_each(|q_c| self.add_skip(from, Skip::epsilon(), &q_c));
+            }
             // r1r2
             RegexF::App(ref a, ref b) => {
-              match *a.0 {
-                  // .*r
-                  RegexF::Star(ref a) if a.accepts_any(&self.ab) =>
-                      self.add_skip(from, Skip::Star, b),
-                  // .{i,j}r
-                  RegexF::Range(ref a, x, y) if a.accepts_any(&self.ab) =>
-                      self.add_skip(from, Skip::range(x, y), b),
-                  // (?=r1)r2
-                  RegexF::Lookahead(ref a) => {
-                      self.to_and(from);
-                      self.add_skip(from, Skip::epsilon(), a);
-                      self.add_skip(from, Skip::epsilon(), b);
-                  },
-                  // Distributivity with alt
-                  RegexF::Alt(ref x, ref y) => {
-                    self.add(from,
-                        &Regex::alt(
-                            Regex::app(x.clone(), b.clone()),
-                            Regex::app(y.clone(), b.clone())));
-                    self.to_or(from);
-                  }
-                  // Some other kind of app
-                  _ => self.add_derivatives(from, q)
-              }
-            },
+                match *a.0 {
+                    // .*r
+                    RegexF::Star(ref a) if a.accepts_any(&self.ab) => {
+                        self.add_skip(from, Skip::Star, b)
+                    }
+                    // .{i,j}r
+                    RegexF::Range(ref a, x, y) if a.accepts_any(&self.ab) => {
+                        self.add_skip(from, Skip::range(x, y), b)
+                    }
+                    // (?=r1)r2
+                    RegexF::Lookahead(ref a) => {
+                        self.to_and(from);
+                        self.add_skip(from, Skip::epsilon(), a);
+                        self.add_skip(from, Skip::epsilon(), b);
+                    }
+                    // Distributivity with alt
+                    RegexF::Alt(ref x, ref y) => {
+                        self.add(
+                            from,
+                            &Regex::alt(
+                                Regex::app(x.clone(), b.clone()),
+                                Regex::app(y.clone(), b.clone()),
+                            ),
+                        );
+                        self.to_or(from);
+                    }
+                    // Some other kind of app
+                    _ => self.add_derivatives(from, q),
+                }
+            }
             // Other (derivative)
-            _ => self.add_derivatives(from, q)
+            _ => self.add_derivatives(from, q),
         }
     }
 
@@ -276,12 +293,13 @@ impl SAFA<char> {
     pub fn as_str_safa(&self) -> SAFA<String> {
         SAFA {
             ab: self.ab.iter().map(|c| c.to_string()).collect(),
-            g: self.g.map(|_, b| b.clone(),
-                          |_, e| Either(e.clone().0.map(|c| c.to_string())))
+            g: self.g.map(
+                |_, b| b.clone(),
+                |_, e| Either(e.clone().0.map(|c| c.to_string())),
+            ),
         }
     }
 }
-
 
 impl<C: Clone + Eq + Ord + std::fmt::Debug + Display + std::hash::Hash + Sync> SAFA<C> {
     /// To regular expression (root node)
@@ -325,13 +343,18 @@ impl<C: Clone + Eq + Ord + std::fmt::Debug + Display + std::hash::Hash + Sync> S
     }
 
     pub fn deltas(&self) -> BTreeSet<(Quant<NodeIndex<u32>>, Either<C, Skip>, NodeIndex<u32>)> {
-        self.g.node_indices().flat_map(|n|
-            self.g.edges(n).map(|e|
-                if self.g[e.source()].is_and() {
-                    (Quant::and(e.source()), e.weight().clone(), e.target())
-                } else {
-                    (Quant::or(e.source()), e.weight().clone(), e.target())
-                })).collect()
+        self.g
+            .node_indices()
+            .flat_map(|n| {
+                self.g.edges(n).map(|e| {
+                    if self.g[e.source()].is_and() {
+                        (Quant::and(e.source()), e.weight().clone(), e.target())
+                    } else {
+                        (Quant::or(e.source()), e.weight().clone(), e.target())
+                    }
+                })
+            })
+            .collect()
     }
 
     fn safe_get(v: &Vec<C>, i: usize) -> String {
@@ -344,13 +367,16 @@ impl<C: Clone + Eq + Ord + std::fmt::Debug + Display + std::hash::Hash + Sync> S
 
     /// Find the largest continuous matching string of characters
     /// exclusive both in [node index] and [usize] that didn't match
-    pub fn solve_char(&self, from: NodeIndex<u32>, i: usize, doc: &Vec<C>) ->
-        (NodeIndex<u32>, Option<(usize, usize)>) {
+    pub fn solve_char(
+        &self,
+        from: NodeIndex<u32>,
+        i: usize,
+        doc: &Vec<C>,
+    ) -> (NodeIndex<u32>, Option<(usize, usize)>) {
         let accepting = &self.accepting();
 
         // Initial state is also accepting
-        if accepting.contains(&self.get_init()) &&
-            (!self.is_end_anchored(from) || doc.len() == 0) {
+        if accepting.contains(&self.get_init()) && (!self.is_end_anchored(from) || doc.len() == 0) {
             return (from, Some((0, 0)));
         }
 
@@ -358,11 +384,12 @@ impl<C: Clone + Eq + Ord + std::fmt::Debug + Display + std::hash::Hash + Sync> S
         let mut s = from;
         for j in i..doc.len() {
             // Apply transition relation
-            if let Some(x) =
-                self.g.edges(s)
-                      .find(|e| e.source() != e.target() &&
-                                e.weight() == &Either::left(doc[j].clone()))
-                      .map(|e| e.target()) {
+            if let Some(x) = self
+                .g
+                .edges(s)
+                .find(|e| e.source() != e.target() && e.weight() == &Either::left(doc[j].clone()))
+                .map(|e| e.target())
+            {
                 // found a substring match or exact match
                 if self.is_accept(x, j, doc) {
                     return (x, Some((i, j + 1)));
@@ -381,30 +408,32 @@ impl<C: Clone + Eq + Ord + std::fmt::Debug + Display + std::hash::Hash + Sync> S
     }
 
     /// Recursively solve an edge and all the children coming off of it
-    fn solve_edge(&self, e: &Either<C, Skip>, from: NodeIndex<u32>,
-        to: NodeIndex<u32>, i: usize, doc: &Vec<C>) ->
-        Option<Vec<(NodeIndex<u32>, usize, usize)>> {
+    fn solve_edge(
+        &self,
+        e: &Either<C, Skip>,
+        from: NodeIndex<u32>,
+        to: NodeIndex<u32>,
+        i: usize,
+        doc: &Vec<C>,
+    ) -> Option<Vec<(NodeIndex<u32>, usize, usize)>> {
         match e.0 {
-            Ok(_) =>
-                match self.solve_char(from, i, doc) {
-                  (n, Some((a,b))) if self.is_accept(n, b, doc) =>
-                      Some(vec![(from, a, b)]),
-                  (n, Some(_)) if self.is_sink(n) => None,
-                  (n, Some((a,b))) => {
-                      let mut sols = self.solve_rec(n, b, doc)?;
-                      sols.insert(0, (from, a, b));
-                      Some(sols)
-                  },
-                  (_, None) => None
-                },
-            Err(Skip::Offset(n)) => self.solve_rec(to, i+n, doc),
-            Err(Skip::Choice(ref ns)) =>
-                ns.into_iter()
-                  .find_map(|n| self.solve_rec(to, i+n, doc)),
-            Err(Skip::Star) =>
-                (i..doc.len())
-                    .into_iter()
-                    .find_map(|n| self.solve_rec(to, i, doc))
+            Ok(_) => match self.solve_char(from, i, doc) {
+                (n, Some((a, b))) if self.is_accept(n, b, doc) => Some(vec![(from, a, b)]),
+                (n, Some(_)) if self.is_sink(n) => None,
+                (n, Some((a, b))) => {
+                    let mut sols = self.solve_rec(n, b, doc)?;
+                    sols.insert(0, (from, a, b));
+                    Some(sols)
+                }
+                (_, None) => None,
+            },
+            Err(Skip::Offset(n)) => self.solve_rec(to, i + n, doc),
+            Err(Skip::Choice(ref ns)) => {
+                ns.into_iter().find_map(|n| self.solve_rec(to, i + n, doc))
+            }
+            Err(Skip::Star) => (i..doc.len())
+                .into_iter()
+                .find_map(|n| self.solve_rec(to, i, doc)),
         }
     }
 
@@ -419,9 +448,12 @@ impl<C: Clone + Eq + Ord + std::fmt::Debug + Display + std::hash::Hash + Sync> S
 
     /// Find a non-empty list of continuous matching document strings,
     /// as well as the sub-AFA that matched them
-    fn solve_rec(&self, n: NodeIndex<u32>, i: usize,
-        doc: &Vec<C>) -> Option<Vec<(NodeIndex<u32>, usize, usize)>> {
-
+    fn solve_rec(
+        &self,
+        n: NodeIndex<u32>,
+        i: usize,
+        doc: &Vec<C>,
+    ) -> Option<Vec<(NodeIndex<u32>, usize, usize)>> {
         // Check accepting condition
         if self.is_accept(n, i, doc) {
             return Some(vec![]);
@@ -440,7 +472,8 @@ impl<C: Clone + Eq + Ord + std::fmt::Debug + Display + std::hash::Hash + Sync> S
             let mut next = self.g.edges(n).filter(|e| e.source() != e.target());
             if self.g[n].is_and() {
                 // All of the next entries must have solutions
-                let subsolutions : Vec<_> = next.into_iter()
+                let subsolutions: Vec<_> = next
+                    .into_iter()
                     .map(|e| self.solve_edge(e.weight(), e.source(), e.target(), i, doc))
                     .collect();
 
@@ -452,8 +485,7 @@ impl<C: Clone + Eq + Ord + std::fmt::Debug + Display + std::hash::Hash + Sync> S
                 }
             } else {
                 // One of the next entries must has a solution
-                next.find_map(|e|
-                    self.solve_edge(e.weight(), e.source(), e.target(), i, doc))
+                next.find_map(|e| self.solve_edge(e.weight(), e.source(), e.target(), i, doc))
             }
         })
     }
@@ -465,7 +497,7 @@ impl<C: Clone + Eq + Ord + std::fmt::Debug + Display + std::hash::Hash + Sync> S
 
 impl SAFA<String> {
     /// Write DOT -> PDF file
-    pub fn write_pdf(&self,  filename: &str) -> std::io::Result<()> {
+    pub fn write_pdf(&self, filename: &str) -> std::io::Result<()> {
         let s: String = Dot::new(&self.g).to_string();
         let fdot = format!("{}.dot", filename.to_string());
         std::fs::write(fdot.clone(), s)?;
@@ -482,16 +514,16 @@ impl SAFA<String> {
             .expect("[dot] CLI failed to convert dfa to [pdf] file")
             .wait()?;
 
-          // Remove DOT file
-          std::fs::remove_file(fdot)?;
-          Ok(())
+        // Remove DOT file
+        std::fs::remove_file(fdot)?;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::safa::SAFA;
     use crate::regex::Regex;
+    use crate::safa::SAFA;
     use petgraph::graph::NodeIndex;
 
     #[test]
@@ -502,7 +534,6 @@ mod tests {
         let strdoc = "baa";
         let doc = strdoc.chars().collect();
         assert_eq!(safa.solve(&doc), Some(vec![(NodeIndex::new(1), 0, 3)]));
-
     }
 
     #[test]
@@ -523,9 +554,10 @@ mod tests {
         safa.as_str_safa().write_pdf("safa").unwrap();
         let strdoc = "abababaab";
         let doc = strdoc.chars().collect();
-        assert_eq!(safa.solve(&doc),
-            Some(vec![(NodeIndex::new(1), 5, 8),
-                      (NodeIndex::new(6), 8, 9)]));
+        assert_eq!(
+            safa.solve(&doc),
+            Some(vec![(NodeIndex::new(1), 5, 8), (NodeIndex::new(6), 8, 9)])
+        );
     }
 
     #[test]
@@ -539,10 +571,9 @@ mod tests {
 
         println!("DELTAS");
         for d in safa.deltas() {
-           println!("{}, {}, {}", d.0, d.1, d.2.index());
+            println!("{}, {}, {}", d.0, d.1, d.2.index());
         }
         println!("SOLUTION for: {}", strdoc);
         println!("{:?}", safa.solve(&doc));
     }
-
 }
