@@ -11,7 +11,6 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::result::Result;
 
-use crate::nfa::EPSILON;
 use crate::regex::{Regex, RegexF};
 use rayon::iter::*;
 
