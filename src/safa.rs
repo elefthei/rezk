@@ -415,6 +415,7 @@ impl SAFA<String> {
 mod tests {
     use crate::safa::{SAFA, Quant, Either, Skip};
     use crate::regex::Regex;
+    use std::collections::HashSet;
     use petgraph::graph::NodeIndex;
 
     #[test]
@@ -485,6 +486,90 @@ mod tests {
         // Check result
         assert_eq!(safa.solve(&doc),
             Some(vec![(NodeIndex::new(1), 4, 5)]));
+    }
+
+    #[test]
+    fn test_safa_validate_pihole_syntax() {
+        let abvec: Vec<char>= (0..128).filter_map(std::char::from_u32).collect();
+        let ab: String = abvec.iter().collect();
+        for s in vec![r"^ad([sxv]?[0-9]*|system)[_.-]([^.[:space:]]+\.){1,}|[_.-]ad([sxv]?[0-9]*|system)[_.-]",
+        "^(.+[_.-])?adse?rv(er?|ice)?s?[0-9]*[_.-]",
+        "^(.+[_.-])?telemetry[_.-]",
+        "^adim(age|g)s?[0-9]*[_.-]",
+        "^adtrack(er|ing)?[0-9]*[_.-]",
+        "^advert(s|is(ing|ements?))?[0-9]*[_.-]",
+        "^aff(iliat(es?|ion))?[_.-]",
+        "^analytics?[_.-]",
+        "^banners?[_.-]",
+        "^beacons?[0-9]*[_.-]",
+        "^count(ers?)?[0-9]*[_.-]",
+        r"^mads\.",
+        "^pixels?[-.]",
+        "^stat(s|istics)?[0-9]*[_.-]"] {
+            let r = Regex::new(s);
+            let safa = SAFA::new(&ab, &r);
+            println!{"Regex: {:#?}",s};
+            let mut states = HashSet::new();
+            let mut ntrans: usize = 0;
+            for d in safa.deltas() {
+               states.insert(d.0);
+               ntrans = ntrans + 1; 
+             }
+            println!{"N States: {:#?}",states.len()};
+            println!{"N Trans: {:#?}",ntrans};
+
+        }
+    }
+
+    #[test]
+    fn test_safa_validate_password() {
+        let abvec: Vec<char>= (0..128).filter_map(std::char::from_u32).collect();
+        let ab: String = abvec.iter().collect();
+        for s in vec![r"(?=.*[A-Z].*[A-Z])(?=.*[!%\^@#\$&*])(?=.*[0-9].*[0-9])(?=.*[a-z].*[a-z].*[a-z]).{12}$"] {
+            let r = Regex::new(s);
+            let safa = SAFA::new(&ab, &r);
+            println!{"Regex: {:#?}",s};
+            let mut states = HashSet::new();
+            let mut ntrans: usize = 0;
+            for d in safa.deltas() {
+               states.insert(d.0);
+               ntrans = ntrans + 1; 
+             }
+            println!{"N States: {:#?}",states.len()};
+            println!{"N Trans: {:#?}",ntrans};
+
+            let strdoc = "MaJ@*n%!vx24";
+            let doc = strdoc.chars().collect();
+
+            println!("SOLUTION for: {}", strdoc);
+            println!("{:?}", safa.solve(&doc));
+        }
+    }
+
+    #[test]
+    fn test_safa_validate_dns() {
+        let abvec: Vec<char>= (0..128).filter_map(std::char::from_u32).collect();
+        let ab: String = abvec.iter().collect();
+        for s in vec!["!(you)tube",r"\.ir\.{5}$","porn|sex|xxx"] {
+            let r = Regex::new(s);
+            let safa = SAFA::new(&ab, &r);
+            // let safa = SAFA::new("abcdefghijklmnopqrstuvwxyz", &r);
+            println!{"Regex: {:#?}",s};
+            let mut states = HashSet::new();
+            let mut ntrans: usize = 0;
+            for d in safa.deltas() {
+               states.insert(d.0);
+               ntrans = ntrans + 1; 
+             }
+            println!{"N States: {:#?}",states.len()};
+            println!{"N Trans: {:#?}",ntrans};
+
+            let strdoc = "sadtube.com";
+            let doc = strdoc.chars().collect();
+
+            println!("SOLUTION for: {}", strdoc);
+            println!("{:?}", safa.solve(&doc));
+        }
     }
 
     #[cfg(feature = "plot")]
