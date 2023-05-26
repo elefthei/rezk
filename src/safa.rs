@@ -550,7 +550,7 @@ mod tests {
     fn test_safa_validate_dns() {
         let abvec: Vec<char>= (0..128).filter_map(std::char::from_u32).collect();
         let ab: String = abvec.iter().collect();
-        for s in vec!["(!(you))tube",r"\.ir\.{5}$","porn|sex|xxx"] {
+        for s in vec![r"^(?!you).*tube\.",r"\.ir\.{5}$","porn|sex|xxx"] {
             let r = Regex::new(s);
             let safa = SAFA::new(&ab, &r);
             // let safa = SAFA::new("abcdefghijklmnopqrstuvwxyz", &r);
