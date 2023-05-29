@@ -37,7 +37,15 @@ pub struct R1CS<'a, F: PrimeField, C: Clone> {
     pub udoc: Vec<usize>,
     pub idoc: Vec<Integer>,
     pub doc_extend: usize,
-    pub moves: Option<LinkedList<(NodeIndex<u32>, Either<char, Skip>, NodeIndex<u32>, usize, usize)>>,
+    pub moves: Option<
+        LinkedList<(
+            NodeIndex<u32>,
+            Either<char, Skip>,
+            NodeIndex<u32>,
+            usize,
+            usize,
+        )>,
+    >,
     is_match: bool,
     //pub substring: (usize, usize), // todo getters
     pub pc: PoseidonConstants<F, typenum::U4>,
@@ -1662,7 +1670,7 @@ mod tests {
                     let mut next_state;
 
                     let mut _start_epsilons;
-                    let moves : Vec<_> = r1cs_converter.moves.clone().unwrap().into_iter().collect();
+                    let moves: Vec<_> = r1cs_converter.moves.clone().unwrap().into_iter().collect();
                     let num_steps = moves.len();
 
                     let mut current_state = moves[0].0.index();
