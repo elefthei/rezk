@@ -20,8 +20,8 @@ fn setup_circ() {
         // set up CirC library
         let mut circ: CircOpt = Default::default();
         circ.field.custom_modulus =
-            "28948022309329048855892746252171976963363056481941647379679742748393362948097".into(); // vesta (fuck???)
-                                                                                                    //"28948022309329048855892746252171976963363056481941560715954676764349967630337".into(); // pallas curve (i think?)
+            "28948022309329048855892746252171976963363056481941647379679742748393362948097".into(); // vesta
+                                                                                                    //"28948022309329048855892746252171976963363056481941560715954676764349967630337".into(); // pallas
         cfg::set(&circ);
     }
 }
@@ -46,6 +46,32 @@ where
     Integer: From<I>,
 {
     Value::Field(cfg().field().new_v(i))
+}
+
+// how is the starting cursor related?
+
+#[derive(Clone, Debug)]
+pub enum CursorInfo {
+    NoRel,                  // default
+    Same,                   // i_next = i_start
+    Plus(usize),            // i_next = i_finish + c (includes 0)
+    PlusChoice(Vec<usize>), // i_next = i_finish + c
+    Geq,                    // i_next >= i_finish
+}
+
+pub(crate) fn add_folding(
+    folding_list: &mut Vec<(Vec<usize>, CursorInfo, usize)>,
+    start_states: Vec<usize>,
+    cinfo: CursorInfo,
+    from: usize,
+) {
+    if folding_list.len() == 0 {
+        folding_list.push((start_states, CursorInfo::NoRel, from));
+    } else {
+        assert!(!matches!(cinfo, CursorInfo::NoRel));
+        //folding_list[folding_list.len() - 1].1 = cinfo;
+        folding_list.push((start_states, cinfo, from)); //CursorInfo::NoRel);
+    }
 }
 
 // PROVER WORK

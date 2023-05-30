@@ -27,7 +27,10 @@ impl<A: Clone> Quant<A> {
         self.0.clone()
     }
 
-    pub fn map<B, F>(&self, f: F) -> Quant<B> where F: Fn(A)-> B {
+    pub fn map<B, F>(&self, f: F) -> Quant<B>
+    where
+        F: Fn(A) -> B,
+    {
         Quant(f(self.0.clone()), self.1)
     }
 }
@@ -51,6 +54,3 @@ impl Display for Quant<NodeIndex<u32>> {
         }
     }
 }
-
-
-

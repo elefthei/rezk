@@ -1,10 +1,10 @@
 #![allow(missing_docs)]
 use crate::regex::Regex;
 
-use arbitrary::{Result, Arbitrary, Unstructured};
+use arbitrary::{Arbitrary, Result, Unstructured};
 
 impl<'a> Arbitrary<'a> for Regex {
-    fn arbitrary(g: &mut Unstructured<'a> ) -> Result<Self> {
+    fn arbitrary(g: &mut Unstructured<'a>) -> Result<Self> {
         // Generate a random index for the enum variant
         let i = g.int_in_range(0..=8)?;
         let mut r = match i {
@@ -19,7 +19,7 @@ impl<'a> Arbitrary<'a> for Regex {
                 let start = g.int_in_range(0..=10)?;
                 let end = g.int_in_range(start..=100)?;
                 Regex::range(Regex::arbitrary(g)?, start, end)
-            },
+            }
             8 => Regex::star(Regex::arbitrary(g)?),
             _ => unreachable!(),
         };

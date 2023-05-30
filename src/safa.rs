@@ -9,9 +9,9 @@ use petgraph::Graph;
 
 use std::result::Result;
 
+use crate::quantifier::Quant;
 use crate::regex::Regex;
 use crate::skip::Skip;
-use crate::quantifier::Quant;
 
 use rayon::iter::*;
 
@@ -153,22 +153,28 @@ impl SAFA<char> {
             // First, check for wildcard skips
             Some((skip, rem)) => self.add_skip(from, skip, &rem),
             None =>
-                // Then for forks (and, or)
+            // Then for forks (and, or)
+            {
                 match q.to_fork() {
                     Some(children) => {
-                        children.get().into_iter().for_each(|q_c|
-                            self.add_skip(from, Skip::epsilon(), &q_c));
+                        children
+                            .get()
+                            .into_iter()
+                            .for_each(|q_c| self.add_skip(from, Skip::epsilon(), &q_c));
                         // Set the current node quantifier
                         if children.is_and() {
                             self.to_and(from)
                         } else {
                             self.to_or(from)
                         }
-                    },
+                    }
                     None =>
-                        // If neither fork or skip, use a simple derivative
+                    // If neither fork or skip, use a simple derivative
+                    {
                         self.add_derivatives(from, q)
+                    }
                 }
+            }
         }
     }
 
@@ -369,8 +375,8 @@ impl SAFA<String> {
 #[cfg(test)]
 mod tests {
     use crate::regex::Regex;
-    use crate::skip::Skip;
     use crate::safa::{Either, SAFA};
+    use crate::skip::Skip;
     use petgraph::graph::NodeIndex;
     use std::collections::LinkedList;
 

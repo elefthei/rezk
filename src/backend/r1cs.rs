@@ -1,5 +1,6 @@
 use crate::backend::nova::int_to_ff;
 use crate::backend::{commitment::*, costs::*, r1cs_helper::*};
+use crate::regex::*;
 use crate::safa::{Either, SAFA};
 use crate::skip::Skip;
 use circ::cfg::*;
@@ -8,15 +9,21 @@ use circ::target::r1cs::{opt::reduce_linearities, trans::to_r1cs, ProverData, Ve
 use ff::PrimeField;
 use fxhash::FxHashMap;
 use generic_array::typenum;
+use hashconsing::{consign, HConsed, HashConsign};
 use neptune::{
     poseidon::PoseidonConstants,
     sponge::api::{IOPattern, SpongeAPI, SpongeOp},
     sponge::vanilla::{Mode, Sponge, SpongeTrait},
 };
 use petgraph::graph::NodeIndex;
+use petgraph::visit::EdgeRef;
 use rug::{integer::Order, ops::RemRounding, Integer};
 use std::cmp::max;
 use std::collections::LinkedList;
+
+fn type_of<T>(_: &T) {
+    println!("TYPE OF {}", std::any::type_name::<T>())
+}
 
 pub struct R1CS<'a, F: PrimeField, C: Clone> {
     pub safa: &'a SAFA<C>,
@@ -47,6 +54,7 @@ pub struct R1CS<'a, F: PrimeField, C: Clone> {
         )>,
     >,
     is_match: bool,
+    foldings: Vec<(Vec<usize>, CursorInfo, usize)>,
     //pub substring: (usize, usize), // todo getters
     pub pc: PoseidonConstants<F, typenum::U4>,
 }
@@ -105,13 +113,18 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
         //      let sel_batch_size = opt_batch_size;
 
         // TODO timing here
-        let moves = safa.solve(&doc);
+
+        /*let moves = safa.solve(&doc);
         let is_match = moves.is_some();
 
         let mut sel_batch_size = 1;
         for m in moves.clone().unwrap() {
             sel_batch_size = max(sel_batch_size, m.4 - m.3);
         }
+        */
+        let moves = None;
+        let is_match = true;
+        let sel_batch_size = 100; // TODO
         println!("BATCH {:#?}", sel_batch_size);
 
         println!(
@@ -178,29 +191,122 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
 
         safa.as_str_safa().write_pdf("safa").unwrap();
 
+        println!("SAFA {:#?}", safa.g);
         println!("ACCEPTING {:#?}", safa.accepting);
-        //        println!("DELTAS {:#?}", safa.deltas());
+        println!("DELTAS {:#?}", safa.deltas());
         println!("SOLVE {:#?}", safa.solve(&doc));
         //        println!("DOC {:#?}", doc.clone());
 
-        for (in_node, edge, out_node) in safa.deltas() {
-            let in_state = in_node.0.index(); // check AND/OR?
-            let out_state = out_node.index();
-            let c = match edge {
-                Either(Err(Skip::Offset(u))) if u == 0 => num_ab[&None], //EPSILON
-                Either(Err(Skip::Offset(u))) => todo!(),                 //write!(f, "+{}", u),
-                Either(Err(Skip::Choice(us))) => todo!(),                //num_ab(us),
-                Either(Err(Skip::Star)) => todo!(),                      //write!(f, "*"),
-                Either(Ok(ch)) => num_ab[&Some(ch)],
-            };
+        let mut foldings = Vec::new();
 
-            table.push(
-                Integer::from((in_state * num_states * num_chars) + (out_state * num_chars) + c)
-                    .rem_floor(cfg().field().modulus()),
-            );
+        for state in safa.g.node_indices() {
+            if safa.g[state].is_and() {
+                for edge in safa.g.edges(state) {
+                    match edge.weight().clone() {
+                        Either(Err(Skip::Offset(u))) if u == 0 => {
+                            let sink = edge.target();
+                            if sink.index() != state.index() {
+                                add_folding(
+                                    &mut foldings,
+                                    vec![sink.index()],
+                                    CursorInfo::Same,
+                                    state.index(),
+                                );
+                            }
+                        }
 
-            delta.insert((in_state, c), out_state);
+                        _ => {
+                            panic!("Weird edge coming from ForAll node {:#?}", state);
+                        }
+                    }
+                }
+            } else if matches!(safa.g[state].get().0.get(), RegexF::Alt(..)) {
+                let mut start_states = vec![];
+                for edge in safa.g.edges(state) {
+                    let sink = edge.target();
+                    match edge.weight().clone() {
+                        Either(Err(Skip::Offset(u))) if u == 0 => {
+                            if sink.index() != state.index() {
+                                start_states.push(sink.index());
+                            }
+                        }
+                        _ => {
+                            panic!("Weird edge coming from Alt node {:#?}", state);
+                        }
+                    }
+                }
+                add_folding(
+                    &mut foldings,
+                    start_states,
+                    CursorInfo::Plus(0),
+                    state.index(),
+                );
+            } else {
+                // other state
+                let in_state = state.index();
+
+                for edge in safa.g.edges(state) {
+                    let out_state = edge.target().index();
+
+                    match edge.weight().clone() {
+                        Either(Err(Skip::Offset(u))) if u == 0 => {
+                            if in_state == out_state {
+                                let c = num_ab[&None]; //EPSILON
+                                table.push(
+                                    Integer::from(
+                                        (in_state * num_states * num_chars)
+                                            + (out_state * num_chars)
+                                            + c,
+                                    )
+                                    .rem_floor(cfg().field().modulus()),
+                                );
+                            } else {
+                                panic!("Epsilon edge in strange place");
+                            }
+                        }
+                        Either(Err(Skip::Offset(u))) => {
+                            add_folding(
+                                &mut foldings,
+                                vec![out_state],
+                                CursorInfo::Plus(u),
+                                state.index(),
+                            );
+                        }
+                        Either(Err(Skip::Choice(us))) => {
+                            add_folding(
+                                &mut foldings,
+                                vec![out_state],
+                                CursorInfo::PlusChoice(us.iter().map(|x| *x).collect()),
+                                state.index(),
+                            );
+                        }
+                        Either(Err(Skip::Star)) => {
+                            add_folding(
+                                &mut foldings,
+                                vec![out_state],
+                                CursorInfo::Geq,
+                                state.index(),
+                            );
+                        }
+                        Either(Ok(ch)) => {
+                            let c = num_ab[&Some(ch)];
+                            table.push(
+                                Integer::from(
+                                    (in_state * num_states * num_chars)
+                                        + (out_state * num_chars)
+                                        + c,
+                                )
+                                .rem_floor(cfg().field().modulus()),
+                            );
+                        }
+                    }
+                }
+            }
         }
+
+        println!("FOLDINGS {:#?}", foldings);
+
+        //            delta.insert((in_state, c), out_state);
 
         // need to round out table size
         let base: usize = 2;
@@ -234,8 +340,8 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
         Self {
             safa,
             num_ab,
-            table, // TODO fix else
-            delta,
+            table,    // TODO fix else
+            delta,    // TODO GET RID
             batching, // TODO
             commit_type: commit,
             reef_commit: None,
@@ -248,6 +354,7 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
             doc_extend: epsilon_to_add,
             moves,
             is_match,
+            foldings,
             //substring,
             pc: pcs,
         }
@@ -1773,9 +1880,9 @@ mod tests {
     fn naive_test() {
         init();
         test_func_no_hash(
-            "abcd".to_string(),
-            "^abcd$".to_string(),
-            "abcd".to_string(),
+            "ab".to_string(),
+            "^b(?=a)abb$".to_string(),
+            "babbbbbb".to_string(),
             vec![1], // 2],
             true,
         );
