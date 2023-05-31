@@ -114,17 +114,14 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
 
         // TODO timing here
 
-        /*let moves = safa.solve(&doc);
+        let moves = safa.solve(&doc);
         let is_match = moves.is_some();
 
         let mut sel_batch_size = 1;
         for m in moves.clone().unwrap() {
             sel_batch_size = max(sel_batch_size, m.4 - m.3);
         }
-        */
-        let moves = None;
-        let is_match = true;
-        let sel_batch_size = 100; // TODO
+
         println!("BATCH {:#?}", sel_batch_size);
 
         println!(
@@ -1882,7 +1879,7 @@ mod tests {
         test_func_no_hash(
             "ab".to_string(),
             "^b(?=a)abb$".to_string(),
-            "babbbbbb".to_string(),
+            "baabb".to_string(),
             vec![1], // 2],
             true,
         );

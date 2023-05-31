@@ -9,9 +9,9 @@ use petgraph::Graph;
 
 use std::result::Result;
 
-use crate::quantifier::Quant;
 use crate::regex::Regex;
 use crate::skip::Skip;
+use crate::quantifier::Quant;
 
 use rayon::iter::*;
 
@@ -153,28 +153,22 @@ impl SAFA<char> {
             // First, check for wildcard skips
             Some((skip, rem)) => self.add_skip(from, skip, &rem),
             None =>
-            // Then for forks (and, or)
-            {
+                // Then for forks (and, or)
                 match q.to_fork() {
                     Some(children) => {
-                        children
-                            .get()
-                            .into_iter()
-                            .for_each(|q_c| self.add_skip(from, Skip::epsilon(), &q_c));
+                        children.get().into_iter().for_each(|q_c|
+                            self.add_skip(from, Skip::epsilon(), &q_c));
                         // Set the current node quantifier
                         if children.is_and() {
                             self.to_and(from)
                         } else {
                             self.to_or(from)
                         }
-                    }
+                    },
                     None =>
-                    // If neither fork or skip, use a simple derivative
-                    {
+                        // If neither fork or skip, use a simple derivative
                         self.add_derivatives(from, q)
-                    }
                 }
-            }
         }
     }
 
@@ -276,7 +270,8 @@ impl<C: Clone + Eq + Ord + Debug + Display + Hash + Sync + Send> SAFA<C> {
         i: usize,
         doc: &Vec<C>,
     ) -> Trace<C> {
-        match e.0.clone() {
+
+        let res = match e.0.clone() {
             // Sink state, cannot succeed
             Ok(_) if self.is_sink(to) => None,
             // Character match
@@ -303,7 +298,8 @@ impl<C: Clone + Eq + Ord + Debug + Display + Hash + Sync + Send> SAFA<C> {
                     (from, e.clone(), to, i, j),
                 )
             }),
-        }
+        };
+        res
     }
 
     /// Find a non-empty list of continuous matching document strings,
@@ -319,7 +315,7 @@ impl<C: Clone + Eq + Ord + Debug + Display + Hash + Sync + Send> SAFA<C> {
         let next: Vec<_> = self
             .g
             .edges(n)
-            .filter(|e| e.source() != e.target())
+            .filter(|e| e.source() != e.target() || e.weight() != &SAFA::epsilon())
             .collect();
         if self.g[n].is_and() {
             // All of the next entries must have solutions
@@ -375,8 +371,8 @@ impl SAFA<String> {
 #[cfg(test)]
 mod tests {
     use crate::regex::Regex;
-    use crate::safa::{Either, SAFA};
     use crate::skip::Skip;
+    use crate::safa::{Either, SAFA};
     use petgraph::graph::NodeIndex;
     use std::collections::LinkedList;
 
@@ -419,6 +415,25 @@ mod tests {
                 (NodeIndex::new(4), Either(Ok('a')), NodeIndex::new(5), 7, 8)
             ]))
         );
+    }
+
+    #[test]
+    fn test_safa_match_star() {
+        let r = Regex::new("^a*$");
+        let safa = SAFA::new("ab", &r);
+        let strdoc = "aa";
+        let doc: Vec<_> = strdoc.chars().collect();
+        assert_eq!(
+            safa.solve(&doc),
+            Some(LinkedList::from([(NodeIndex::new(0),
+                   SAFA::epsilon(),
+                   NodeIndex::new(1), 0, 0),
+                  (NodeIndex::new(1),
+                   Either::left('a'),
+                   NodeIndex::new(1), 0, 1),
+                  (NodeIndex::new(1),
+                   Either::left('a'),
+                   NodeIndex::new(1), 1, 2)])))
     }
 
     #[test]
