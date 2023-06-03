@@ -15,8 +15,11 @@ use neptune::{
     sponge::api::{IOPattern, SpongeAPI, SpongeOp},
     sponge::vanilla::{Mode, Sponge, SpongeTrait},
 };
-use petgraph::graph::NodeIndex;
-use petgraph::visit::EdgeRef;
+use petgraph::{
+    graph::{EdgeReference, NodeIndex},
+    prelude::Dfs,
+    visit::EdgeRef,
+};
 use rug::{integer::Order, ops::RemRounding, Integer};
 use std::cmp::max;
 use std::collections::LinkedList;
@@ -54,7 +57,7 @@ pub struct R1CS<'a, F: PrimeField, C: Clone> {
         )>,
     >,
     is_match: bool,
-    foldings: Vec<(Vec<usize>, CursorInfo, usize)>,
+    foldings: Vec<(Vec<usize>, CursorInfo, usize, StackInfo)>,
     //pub substring: (usize, usize), // todo getters
     pub pc: PoseidonConstants<F, typenum::U4>,
 }
@@ -196,20 +199,34 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
 
         let mut foldings = Vec::new();
 
-        for state in safa.g.node_indices() {
+        let mut dfs = Dfs::new(&safa.g, safa.get_init());
+
+        while let Some(state) = dfs.next(&safa.g) {
             if safa.g[state].is_and() {
-                for edge in safa.g.edges(state) {
-                    match edge.weight().clone() {
+                let mut and_edges: Vec<EdgeReference<Either<char, Skip>>> = safa
+                    .g
+                    .edges(state)
+                    .filter(|e| e.source() != e.target())
+                    .collect();
+                and_edges.sort_by(|a, b| a.target().partial_cmp(&b.target()).unwrap());
+                for i in 0..and_edges.len() {
+                    match and_edges[i].weight().clone() {
                         Either(Err(Skip::Offset(u))) if u == 0 => {
-                            let sink = edge.target();
-                            if sink.index() != state.index() {
-                                add_folding(
-                                    &mut foldings,
-                                    vec![sink.index()],
-                                    CursorInfo::Same,
-                                    state.index(),
-                                );
-                            }
+                            let sink = and_edges[i].target();
+                            let stack = if i == and_edges.len() - 1 {
+                                //end
+                                StackInfo::Pop
+                            } else {
+                                StackInfo::Level
+                            };
+                            // AND
+                            add_folding(
+                                &mut foldings,
+                                vec![sink.index()],
+                                CursorInfo::PlusChoice(vec![0]),
+                                state.index(),
+                                stack,
+                            );
                         }
 
                         _ => {
@@ -232,11 +249,13 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                         }
                     }
                 }
+                // OR
                 add_folding(
                     &mut foldings,
                     start_states,
-                    CursorInfo::Plus(0),
+                    CursorInfo::PlusChoice(vec![0]),
                     state.index(),
+                    StackInfo::Push,
                 );
             } else {
                 // other state
@@ -265,8 +284,9 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                             add_folding(
                                 &mut foldings,
                                 vec![out_state],
-                                CursorInfo::Plus(u),
+                                CursorInfo::PlusChoice(vec![u]),
                                 state.index(),
+                                StackInfo::Push,
                             );
                         }
                         Either(Err(Skip::Choice(us))) => {
@@ -275,6 +295,7 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                                 vec![out_state],
                                 CursorInfo::PlusChoice(us.iter().map(|x| *x).collect()),
                                 state.index(),
+                                StackInfo::Push,
                             );
                         }
                         Either(Err(Skip::Star)) => {
@@ -283,6 +304,7 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                                 vec![out_state],
                                 CursorInfo::Geq,
                                 state.index(),
+                                StackInfo::Push,
                             );
                         }
                         Either(Ok(ch)) => {
@@ -451,6 +473,166 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
     }
 
     // CIRCUIT
+
+    fn foldings_circ(&mut self) {
+        if self.foldings.len() == 0 {
+            panic!("zero foldings");
+        } else if self.foldings[0].2 != 0 && !self.foldings[0].0.contains(&1) {
+            panic!("foldings don't start at beginning");
+        }
+
+        let fold_p1 = term(
+            Op::Eq,
+            vec![
+                new_var(format!("fold_num")),
+                term(
+                    Op::PfNaryOp(PfNaryOp::Add),
+                    vec![new_var(format!("fold_num")), new_const(1)],
+                ),
+            ],
+        );
+
+        let mut ite_term = new_bool_const(false); // final else
+        let mut stack_cursor = 0;
+        for (starts, c_info, from, s_info) in &self.foldings {
+            // cond
+            let cond = match starts.len() {
+                0 => panic!("no start states for folding"),
+                1 => term(
+                    Op::Eq,
+                    vec![new_var(format!("state_0")), new_const(starts[0])],
+                ),
+                _ => term(
+                    Op::BoolNaryOp(BoolNaryOp::Or),
+                    starts
+                        .into_iter()
+                        .map(|s| term(Op::Eq, vec![new_var(format!("state_0")), new_const(*s)]))
+                        .collect(),
+                ),
+            };
+
+            // cursor
+            let cursor_cnstr = match c_info {
+                CursorInfo::PlusChoice(v) => match v.len() {
+                    0 => panic!("no choices for cusor info"),
+                    1 => term(
+                        Op::Eq,
+                        vec![
+                            new_var(format!("i_0")),
+                            term(
+                                Op::PfNaryOp(PfNaryOp::Add),
+                                vec![new_var(format!("i_z_cursor")), new_const(v[0])],
+                            ),
+                        ],
+                    ),
+                    _ => term(
+                        Op::BoolNaryOp(BoolNaryOp::Or),
+                        v.into_iter()
+                            .map(|vi| {
+                                term(
+                                    Op::Eq,
+                                    vec![
+                                        new_var(format!("i_0")),
+                                        term(
+                                            Op::PfNaryOp(PfNaryOp::Add),
+                                            vec![new_var(format!("i_z_cursor")), new_const(*vi)],
+                                        ),
+                                    ],
+                                )
+                            })
+                            .collect(),
+                    ),
+                },
+                CursorInfo::Geq => term(
+                    Op::IntBinPred(IntBinPred::Ge),
+                    vec![new_var(format!("i_0")), new_var(format!("i_z_cursor"))],
+                ),
+            };
+
+            let stack_cnstr = match s_info {
+                StackInfo::Push => {
+                    let mut stack = vec![];
+                    for i in 0..self.foldings.len() {
+                        // TODO self.folding_depth {
+                        if i == stack_cursor {
+                            stack.push(term(
+                                Op::Eq,
+                                vec![
+                                    new_var(format!("i_{}", self.batch_size)), // the final i (last
+                                    // used + 1)
+                                    new_var(format!("i_z_next_{}", i)),
+                                ],
+                            ));
+                        } else {
+                            stack.push(term(
+                                Op::Eq,
+                                vec![
+                                    new_var(format!("i_z_{}", i)),
+                                    new_var(format!("i_z_next_{}", i)),
+                                ],
+                            ));
+                        }
+                    }
+
+                    stack_cursor += 1;
+
+                    term(Op::BoolNaryOp(BoolNaryOp::And), stack)
+                }
+
+                StackInfo::Pop => {
+                    // we don't care about overwriting, we just move the cursor
+                    let mut stack = vec![];
+                    for i in 0..self.foldings.len() {
+                        // TODO self.folding_depth {
+                        stack.push(term(
+                            Op::Eq,
+                            vec![
+                                new_var(format!("i_z_{}", i)),
+                                new_var(format!("i_z_next_{}", i)),
+                            ],
+                        ));
+                    }
+
+                    stack_cursor -= 1;
+
+                    term(Op::BoolNaryOp(BoolNaryOp::And), stack)
+                }
+
+                StackInfo::Level => {
+                    let mut stack = vec![];
+                    for i in 0..self.foldings.len() {
+                        // TODO self.folding_depth {
+                        stack.push(term(
+                            Op::Eq,
+                            vec![
+                                new_var(format!("i_z_{}", i)),
+                                new_var(format!("i_z_next_{}", i)),
+                            ],
+                        ));
+                    }
+
+                    term(Op::BoolNaryOp(BoolNaryOp::And), stack)
+                }
+            };
+
+            let z_cursor = term(
+                Op::Eq,
+                vec![
+                    new_var(format!("i_z_cursor")),
+                    new_var(format!("i_z_{}", stack_cursor)),
+                ],
+            );
+
+            let cursor_stack = term(
+                Op::BoolNaryOp(BoolNaryOp::And),
+                vec![fold_p1.clone(), cursor_cnstr, stack_cnstr, z_cursor],
+            );
+
+            ite_term = term(Op::Ite, vec![cond, cursor_stack, ite_term]);
+
+            assert!(stack_cursor >= 0);
+        }
+    }
 
     // check if we need vs as vars
     fn lookup_idxs(&mut self, include_vs: bool) -> Vec<Term> {

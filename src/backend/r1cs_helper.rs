@@ -35,6 +35,12 @@ where
     leaf_term(Op::Const(Value::Field(cfg().field().new_v(i))))
 }
 
+pub(crate) fn new_bool_const(b: bool) -> Term
+// constants
+{
+    leaf_term(Op::Const(Value::Bool(b)))
+}
+
 pub(crate) fn new_var(name: String) -> Term {
     // empty holes
     leaf_term(Op::Var(name, Sort::Field(cfg().field().clone())))
@@ -52,25 +58,29 @@ where
 
 #[derive(Clone, Debug)]
 pub enum CursorInfo {
-    NoRel,                  // default
-    Same,                   // i_next = i_start
-    Plus(usize),            // i_next = i_finish + c (includes 0)
-    PlusChoice(Vec<usize>), // i_next = i_finish + c
-    Geq,                    // i_next >= i_finish
+    PlusChoice(Vec<usize>), // i_start = i_z + {c} (includes 0)
+    Geq,                    // i_start >= i_z
+}
+
+#[derive(Clone, Debug)]
+pub enum StackInfo {
+    Push,
+    Pop,
+    Level, // same level, no push or pop
 }
 
 pub(crate) fn add_folding(
-    folding_list: &mut Vec<(Vec<usize>, CursorInfo, usize)>,
+    folding_list: &mut Vec<(Vec<usize>, CursorInfo, usize, StackInfo)>,
     start_states: Vec<usize>,
     cinfo: CursorInfo,
     from: usize,
+    sinfo: StackInfo,
 ) {
     if folding_list.len() == 0 {
-        folding_list.push((start_states, CursorInfo::NoRel, from));
+        folding_list.push((start_states, CursorInfo::PlusChoice(vec![0]), from, sinfo));
     } else {
-        assert!(!matches!(cinfo, CursorInfo::NoRel));
         //folding_list[folding_list.len() - 1].1 = cinfo;
-        folding_list.push((start_states, cinfo, from)); //CursorInfo::NoRel);
+        folding_list.push((start_states, cinfo, from, sinfo)); //CursorInfo::NoRel);
     }
 }
 
