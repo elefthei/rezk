@@ -69,18 +69,39 @@ pub enum StackInfo {
     Level, // same level, no push or pop
 }
 
+#[derive(Clone, Debug)]
+pub struct Folding {
+    pub start_states: Vec<usize>,
+    pub c_info: CursorInfo,
+    pub from: usize,
+    pub s_info: StackInfo,
+    pub must_accept: bool,
+}
+
 pub(crate) fn add_folding(
-    folding_list: &mut Vec<(Vec<usize>, CursorInfo, usize, StackInfo)>,
+    folding_list: &mut Vec<Folding>,
     start_states: Vec<usize>,
-    cinfo: CursorInfo,
+    c_info: CursorInfo,
     from: usize,
-    sinfo: StackInfo,
+    s_info: StackInfo,
 ) {
     if folding_list.len() == 0 {
-        folding_list.push((start_states, CursorInfo::PlusChoice(vec![0]), from, sinfo));
+        folding_list.push(Folding {
+            start_states,
+            c_info: CursorInfo::PlusChoice(vec![0]),
+            from,
+            s_info,
+            must_accept: false,
+        });
     } else {
         //folding_list[folding_list.len() - 1].1 = cinfo;
-        folding_list.push((start_states, cinfo, from, sinfo)); //CursorInfo::NoRel);
+        folding_list.push(Folding {
+            start_states,
+            c_info,
+            from,
+            s_info,
+            must_accept: false,
+        }); //CursorInfo::NoRel);
     }
 }
 

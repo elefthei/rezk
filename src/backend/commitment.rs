@@ -48,7 +48,6 @@ pub struct DocCommitmentStruct<F> {
 }
 
 pub fn gen_commitment(
-    commit_docype: JCommit,
     doc: Vec<usize>,
     pc: &PoseidonConstants<<G1 as Group>::Scalar, typenum::U4>,
 ) -> ReefCommitment<<G1 as Group>::Scalar>
@@ -56,96 +55,41 @@ where
     G1: Group<Base = <G2 as Group>::Scalar>,
     G2: Group<Base = <G1 as Group>::Scalar>,
 {
-    match commit_docype {
-        JCommit::HashChain => {
-            let mut hash;
+    let doc_ext_len = doc.len().next_power_of_two();
 
-            // H_0 = Hash(0, r, 0)
-            let mut sponge = Sponge::new_with_constants(pc, Mode::Simplex);
-            let acc = &mut ();
+    let mut doc_ext: Vec<Integer> = doc.into_iter().map(|x| Integer::from(x)).collect();
+    doc_ext.append(&mut vec![Integer::from(0); doc_ext_len - doc_ext.len()]);
 
-            let parameter = IOPattern(vec![SpongeOp::Absorb(2), SpongeOp::Squeeze(1)]);
-            sponge.start(parameter, None, acc);
+    let mle = mle_from_pts(doc_ext);
 
-            let blind = <G1 as Group>::Scalar::random(&mut OsRng);
+    let gens_t = CommitmentGens::<G1>::new(b"nlookup document commitment", mle.len()); // n is dimension
+    let blind = <G1 as Group>::Scalar::random(&mut OsRng);
 
-            SpongeAPI::absorb(
-                &mut sponge,
-                2,
-                &[blind, <G1 as Group>::Scalar::from(0)],
-                acc,
-            );
-            hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
-            sponge.finish(acc).unwrap();
-
-            let mut i = 0;
-            // H_i = Hash(H_i-1, char, i)
-            for c in doc.into_iter() {
-                let mut sponge = Sponge::new_with_constants(pc, Mode::Simplex);
-                let acc = &mut ();
-
-                let parameter = IOPattern(vec![SpongeOp::Absorb(3), SpongeOp::Squeeze(1)]);
-                sponge.start(parameter, None, acc);
-
-                SpongeAPI::absorb(
-                    &mut sponge,
-                    3,
-                    &[
-                        hash[0],
-                        <G1 as Group>::Scalar::from(c as u64),
-                        <G1 as Group>::Scalar::from(i),
-                    ],
-                    acc,
-                );
-                hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
-
-                sponge.finish(acc).unwrap();
-                i += 1;
-            }
-
-            return ReefCommitment::HashChain(HashCommitmentStruct {
-                commit: hash[0],
-                blind: blind,
-            });
-        }
-        JCommit::Nlookup => {
-            let doc_ext_len = doc.len().next_power_of_two();
-
-            let mut doc_ext: Vec<Integer> = doc.into_iter().map(|x| Integer::from(x)).collect();
-            doc_ext.append(&mut vec![Integer::from(0); doc_ext_len - doc_ext.len()]);
-
-            let mle = mle_from_pts(doc_ext);
-
-            let gens_t = CommitmentGens::<G1>::new(b"nlookup document commitment", mle.len()); // n is dimension
-            let blind = <G1 as Group>::Scalar::random(&mut OsRng);
-
-            let scalars: Vec<<G1 as Group>::Scalar> = //<G1 as Group>::Scalar> =
+    let scalars: Vec<<G1 as Group>::Scalar> = //<G1 as Group>::Scalar> =
                 mle.into_iter().map(|x| int_to_ff(x)).collect();
 
-            let commit_doc = <G1 as Group>::CE::commit(&gens_t, &scalars, &blind);
+    let commit_doc = <G1 as Group>::CE::commit(&gens_t, &scalars, &blind);
 
-            // for in circuit hashing
-            let mut ro: PoseidonRO<<G2 as Group>::Scalar, <G1 as Group>::Scalar> =
-                PoseidonRO::new(PoseidonConstantsCircuit::new(), 3);
-            commit_doc.absorb_in_ro(&mut ro);
-            let commit_doc_hash = ro.squeeze(256); // todo
+    // for in circuit hashing
+    let mut ro: PoseidonRO<<G2 as Group>::Scalar, <G1 as Group>::Scalar> =
+        PoseidonRO::new(PoseidonConstantsCircuit::new(), 3);
+    commit_doc.absorb_in_ro(&mut ro);
+    let commit_doc_hash = ro.squeeze(256); // todo
 
-            let doc_commit = DocCommitmentStruct {
-                gens: gens_t.clone(),
-                gens_single: CommitmentGens::<G1>::new_with_blinding_gen(
-                    b"gens_s",
-                    1,
-                    &gens_t.get_blinding_gen(),
-                ),
-                commit_doc: commit_doc.compress(),
-                vec_t: scalars,
-                decommit_doc: blind,
-                commit_doc_hash: commit_doc_hash,
-            };
+    let doc_commit = DocCommitmentStruct {
+        gens: gens_t.clone(),
+        gens_single: CommitmentGens::<G1>::new_with_blinding_gen(
+            b"gens_s",
+            1,
+            &gens_t.get_blinding_gen(),
+        ),
+        commit_doc: commit_doc.compress(),
+        vec_t: scalars,
+        decommit_doc: blind,
+        commit_doc_hash: commit_doc_hash,
+    };
 
-            return ReefCommitment::Nlookup(doc_commit);
-        }
-    }
+    return ReefCommitment::Nlookup(doc_commit);
 }
 
 // this crap will need to be seperated out
@@ -181,7 +125,6 @@ pub fn proof_dot_prod(
 }
 
 pub fn final_clear_checks(
-    eval_type: JBatching,
     reef_commitment: ReefCommitment<<G1 as Group>::Scalar>,
     accepting_state: <G1 as Group>::Scalar,
     table: &Vec<Integer>,
@@ -199,24 +142,15 @@ pub fn final_clear_checks(
     match (final_q, final_v) {
         (Some(q), Some(v)) => {
             // T is in the clear for this case
-            match eval_type {
-                JBatching::NaivePolys => {
-                    panic!(
-                        "naive poly evaluation used, but running claim provided for verification"
-                    );
-                }
-                JBatching::Nlookup => {
-                    let mut q_i = vec![];
-                    for f in q {
-                        q_i.push(Integer::from_digits(f.to_repr().as_ref(), Order::Lsf));
-                    }
-                    // TODO mle eval over F
-                    assert_eq!(
-                        verifier_mle_eval(table, &q_i),
-                        (Integer::from_digits(v.to_repr().as_ref(), Order::Lsf))
-                    );
-                }
+            let mut q_i = vec![];
+            for f in q {
+                q_i.push(Integer::from_digits(f.to_repr().as_ref(), Order::Lsf));
             }
+            // TODO mle eval over F
+            assert_eq!(
+                verifier_mle_eval(table, &q_i),
+                (Integer::from_digits(v.to_repr().as_ref(), Order::Lsf))
+            );
         }
         (Some(_), None) => {
             panic!("only half of running claim recieved");
@@ -225,19 +159,14 @@ pub fn final_clear_checks(
             panic!("only half of running claim recieved");
         }
         (None, None) => {
-            if matches!(eval_type, JBatching::Nlookup) {
-                panic!("nlookup evaluation used, but no running claim provided for verification");
-            }
+            panic!("nlookup evaluation used, but no running claim provided for verification");
         }
     }
 
     // todo vals align
     // hash chain commitment check
     match reef_commitment {
-        ReefCommitment::HashChain(h) => {
-            // todo substring
-            assert_eq!(h.commit, final_hash.unwrap());
-        }
+        ReefCommitment::HashChain(h) => {}
         ReefCommitment::Nlookup(dc) => {
             // or - nlookup commitment check
             match (final_doc_q, final_doc_v) {

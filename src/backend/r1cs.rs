@@ -32,10 +32,8 @@ pub struct R1CS<'a, F: PrimeField, C: Clone> {
     pub safa: &'a SAFA<C>,
     pub num_ab: FxHashMap<Option<C>, usize>,
     pub table: Vec<Integer>,
-    delta: FxHashMap<(usize, usize), usize>, // in state, char as num, out state
-    pub batching: JBatching,
-    pub commit_type: JCommit,
-    pub reef_commit: Option<ReefCommitment<F>>,
+    //delta: FxHashMap<(usize, usize), usize>, // in state, char as num, out state
+    pub reef_commit: ReefCommitment<F>,
     assertions: Vec<Term>,
     // perhaps a misleading name, by "public inputs", we mean "circ leaves these wires exposed from
     // the black box, and will not optimize them away"
@@ -47,17 +45,15 @@ pub struct R1CS<'a, F: PrimeField, C: Clone> {
     pub udoc: Vec<usize>,
     pub idoc: Vec<Integer>,
     pub doc_extend: usize,
-    pub moves: Option<
-        LinkedList<(
-            NodeIndex<u32>,
-            Either<char, Skip>,
-            NodeIndex<u32>,
-            usize,
-            usize,
-        )>,
-    >,
+    pub moves: LinkedList<(
+        NodeIndex<u32>,
+        Either<char, Skip>,
+        NodeIndex<u32>,
+        usize,
+        usize,
+    )>,
     is_match: bool,
-    foldings: Vec<(Vec<usize>, CursorInfo, usize, StackInfo)>,
+    pub foldings: Vec<Folding>,
     //pub substring: (usize, usize), // todo getters
     pub pc: PoseidonConstants<F, typenum::U4>,
 }
@@ -67,15 +63,11 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
         safa: &'a SAFA<char>,
         doc: &Vec<char>,
         batch_size: usize,
+        reef_commit: ReefCommitment<F>,
         pcs: PoseidonConstants<F, typenum::U4>,
-        batch_override: Option<JBatching>,
-        commit_override: Option<JCommit>,
     ) -> Self {
         //let nfa_match = nfa.is_match(doc);
         //let is_match = nfa_match.is_some();
-
-        let batching = batch_override.unwrap();
-        let commit = commit_override.unwrap();
 
         //let opt_batch_size;
         let cost: usize;
@@ -117,30 +109,25 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
 
         // TODO timing here
 
-        let moves = safa.solve(&doc);
-        let is_match = moves.is_some();
+        let moves = safa.solve(&doc).unwrap();
+        let is_match = true;
 
         let mut sel_batch_size = 1;
-        for m in moves.clone().unwrap() {
+        for m in moves.clone() {
             sel_batch_size = max(sel_batch_size, m.4 - m.3);
         }
 
         println!("BATCH {:#?}", sel_batch_size);
 
         println!(
-            "batch type: {:#?}, commit type: {:#?}, batch_size {:#?}",
-            batching,
-            commit,
+            "batch size: {:#?}",
             sel_batch_size, //cost
         );
 
-        //let mut batch_doc = doc.clone();
         let mut batch_doc_len = doc.len();
 
-        if matches!(commit, JCommit::Nlookup) {
-            //    batch_doc.push(EPSILON.clone()); // MUST do to make batching work w/commitments
-            batch_doc_len += 1;
-        }
+        // nlookup
+        batch_doc_len += 1;
 
         let mut epsilon_to_add = sel_batch_size - (batch_doc_len % sel_batch_size);
 
@@ -184,7 +171,6 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
         // generate T
         let num_states = safa.g.node_count();
         let num_chars = safa.ab.len();
-        let mut delta = FxHashMap::default(); //TODO (rm duplicates)
 
         // TODO range check
         let mut table = vec![];
@@ -213,11 +199,15 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                     match and_edges[i].weight().clone() {
                         Either(Err(Skip::Offset(u))) if u == 0 => {
                             let sink = and_edges[i].target();
-                            let stack = if i == and_edges.len() - 1 {
-                                //end
+                            let stack = if (i == and_edges.len() - 1)
+                                && safa.g.neighbors(and_edges[i].target()).count() == 0
+                            {
+                                // no children (i hope your die i hope we both die)
                                 StackInfo::Pop
-                            } else {
+                            } else if safa.g.neighbors(and_edges[i].target()).count() == 0 {
                                 StackInfo::Level
+                            } else {
+                                StackInfo::Push
                             };
                             // AND
                             add_folding(
@@ -321,11 +311,14 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                     }
                 }
             }
+
+            if safa.accepting.contains(&state) {
+                let len = foldings.len() - 1;
+                foldings[len].must_accept = true;
+            }
         }
 
         println!("FOLDINGS {:#?}", foldings);
-
-        //            delta.insert((in_state, c), out_state);
 
         // need to round out table size
         let base: usize = 2;
@@ -350,20 +343,16 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
         println!("udoc {:#?}", usize_doc.clone());
 
         // EPSILON
-        if matches!(commit, JCommit::Nlookup) {
-            let u = num_ab[&None];
-            usize_doc.push(u);
-            int_doc.push(Integer::from(u));
-        }
+        let u = num_ab[&None];
+        usize_doc.push(u);
+        int_doc.push(Integer::from(u));
 
         Self {
             safa,
             num_ab,
-            table,    // TODO fix else
-            delta,    // TODO GET RID
-            batching, // TODO
-            commit_type: commit,
-            reef_commit: None,
+            table, // TODO fix else
+            //delta,    // TODO GET RID
+            reef_commit,
             assertions: Vec::new(),
             pub_inputs: Vec::new(),
             batch_size: sel_batch_size,
@@ -376,20 +365,6 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
             foldings,
             //substring,
             pc: pcs,
-        }
-    }
-
-    pub fn set_commitment(&mut self, rc: ReefCommitment<F>) {
-        match (&rc, self.commit_type) {
-            (ReefCommitment::HashChain(_), JCommit::HashChain) => {
-                self.reef_commit = Some(rc);
-            }
-            (ReefCommitment::Nlookup(_), JCommit::Nlookup) => {
-                self.reef_commit = Some(rc);
-            }
-            _ => {
-                panic!("Commitment does not match selected type");
-            }
         }
     }
 
@@ -477,7 +452,7 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
     fn foldings_circ(&mut self) {
         if self.foldings.len() == 0 {
             panic!("zero foldings");
-        } else if self.foldings[0].2 != 0 && !self.foldings[0].0.contains(&1) {
+        } else if self.foldings[0].from != 0 && !self.foldings[0].start_states.contains(&1) {
             panic!("foldings don't start at beginning");
         }
 
@@ -494,25 +469,25 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
 
         let mut ite_term = new_bool_const(false); // final else
         let mut stack_cursor = 0;
-        for (starts, c_info, from, s_info) in &self.foldings {
+        for f in &self.foldings {
             // cond
-            let cond = match starts.len() {
+            let cond = match f.start_states.len() {
                 0 => panic!("no start states for folding"),
                 1 => term(
                     Op::Eq,
-                    vec![new_var(format!("state_0")), new_const(starts[0])],
+                    vec![new_var(format!("state_0")), new_const(f.start_states[0])],
                 ),
                 _ => term(
                     Op::BoolNaryOp(BoolNaryOp::Or),
-                    starts
-                        .into_iter()
+                    f.start_states
+                        .iter()
                         .map(|s| term(Op::Eq, vec![new_var(format!("state_0")), new_const(*s)]))
                         .collect(),
                 ),
             };
 
             // cursor
-            let cursor_cnstr = match c_info {
+            let cursor_cnstr = match &f.c_info {
                 CursorInfo::PlusChoice(v) => match v.len() {
                     0 => panic!("no choices for cusor info"),
                     1 => term(
@@ -549,7 +524,7 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                 ),
             };
 
-            let stack_cnstr = match s_info {
+            let stack_cnstr = match f.s_info {
                 StackInfo::Push => {
                     let mut stack = vec![];
                     for i in 0..self.foldings.len() {
@@ -623,12 +598,15 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                 ],
             );
 
-            let cursor_stack = term(
-                Op::BoolNaryOp(BoolNaryOp::And),
-                vec![fold_p1.clone(), cursor_cnstr, stack_cnstr, z_cursor],
-            );
+            let mut req_vec = vec![fold_p1.clone(), cursor_cnstr, stack_cnstr, z_cursor];
+            if f.must_accept {
+                let acc = term(Op::Eq, vec![new_var(format!("accepting")), new_const(1)]);
+                req_vec.push(acc);
+            }
 
-            ite_term = term(Op::Ite, vec![cond, cursor_stack, ite_term]);
+            let req = term(Op::BoolNaryOp(BoolNaryOp::And), req_vec);
+
+            ite_term = term(Op::Ite, vec![cond, req, ite_term]);
 
             assert!(stack_cursor >= 0);
         }
@@ -753,52 +731,6 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
         }*/
 
         circ_r1cs.finalize(&final_cs)
-    }
-
-    pub fn to_circuit(&mut self) -> (ProverData, VerifierData) {
-        match self.batching {
-            JBatching::NaivePolys => self.to_polys(),
-            JBatching::Nlookup => self.to_nlookup(),
-        }
-    }
-
-    fn to_polys(&mut self) -> (ProverData, VerifierData) {
-        //let l_time = Instant::now();
-        let lookup = self.lookup_idxs(false);
-
-        //Makes big polynomial
-        for i in 0..self.batch_size {
-            let eq = term(
-                Op::Eq,
-                vec![
-                    new_const(0), // vanishing
-                    poly_eval_circuit(self.table.clone(), lookup[i].clone()), // this means repeats, but I think circ
-                                                                              // takes care of; TODO also clones
-                ],
-            );
-            self.assertions.push(eq);
-        }
-
-        // TODO NEW      self.accepting_state_circuit();
-
-        match self.commit_type {
-            JCommit::HashChain => {
-                self.hashchain_commit();
-            }
-            JCommit::Nlookup => {
-                self.nlookup_doc_commit();
-            }
-        }
-
-        self.r1cs_conv()
-    }
-
-    // TODO get rid of i compares
-    fn hashchain_commit(&mut self) {
-        /*    self.pub_inputs.push(new_var(format!("i_0")));
-        for idx in 1..=self.batch_size {
-            self.pub_inputs.push(new_var(format!("i_{}", idx)));
-        }*/ //uneeded I believe
     }
 
     // for use at the end of sum check
@@ -1004,20 +936,14 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
         }
     }
 
-    pub fn to_nlookup(&mut self) -> (ProverData, VerifierData) {
+    pub fn to_circuit(&mut self) -> (ProverData, VerifierData) {
         let lookups = self.lookup_idxs(true);
         self.nlookup_gadget(lookups, self.table.len(), "nl"); // len correct? TODO
 
         self.accepting_state_circuit(); // TODO
 
-        match self.commit_type {
-            JCommit::HashChain => {
-                self.hashchain_commit();
-            }
-            JCommit::Nlookup => {
-                self.nlookup_doc_commit();
-            }
-        }
+        self.nlookup_doc_commit();
+
         self.r1cs_conv()
     }
 
@@ -1139,91 +1065,22 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
             .push(new_var(format!("{}_next_running_claim", id)));
     }
 
-    pub fn gen_wit_i(
-        &self,
-        move_num: (usize, usize),
-        batch_num: usize,
-        current_state: usize,
-        prev_running_claim_q: Option<Vec<Integer>>,
-        prev_running_claim_v: Option<Integer>,
-        prev_doc_running_claim_q: Option<Vec<Integer>>,
-        prev_doc_running_claim_v: Option<Integer>,
-        prev_doc_idx: Option<isize>,
-    ) -> (
-        FxHashMap<String, Value>,
-        usize,
-        Option<Vec<Integer>>,
-        Option<Integer>,
-        Option<Vec<Integer>>,
-        Option<Integer>,
-        isize,
-        Option<isize>,
-    ) {
-        match self.batching {
-            JBatching::NaivePolys => {
-                let (
-                    wits,
-                    next_state,
-                    next_doc_running_claim_q,
-                    next_doc_running_claim_v,
-                    start_epsilons,
-                    next_doc_idx,
-                ) = self.gen_wit_i_polys(
-                    move_num,
-                    batch_num,
-                    current_state,
-                    prev_doc_running_claim_q,
-                    prev_doc_running_claim_v,
-                    prev_doc_idx,
-                );
-                (
-                    wits,
-                    next_state,
-                    None,
-                    None,
-                    next_doc_running_claim_q,
-                    next_doc_running_claim_v,
-                    start_epsilons,
-                    next_doc_idx,
-                )
-            }
-            JBatching::Nlookup => self.gen_wit_i_nlookup(
-                move_num,
-                batch_num,
-                current_state,
-                prev_running_claim_q,
-                prev_running_claim_v,
-                prev_doc_running_claim_q,
-                prev_doc_running_claim_v,
-                prev_doc_idx,
-            ),
-        }
-    }
-
     fn access_doc_at(&self, move_num: (usize, usize), batch_num: usize, i: usize) -> (usize, bool) {
         let access_at = i; //batch_num * self.batch_size + i;
 
-        match self.commit_type {
-            JCommit::HashChain => {
-                println!("access {}", access_at);
-                (access_at, access_at >= move_num.1)
-            }
-
-            JCommit::Nlookup => {
-                if access_at >= move_num.1 {
-                    println!("access {}", self.udoc.len() - 1);
-                    (self.udoc.len() - 1, true)
-                } else {
-                    println!("access {}", access_at);
-                    (access_at, false)
-                }
-            }
+        if access_at >= move_num.1 {
+            println!("access {}", self.udoc.len() - 1);
+            (self.udoc.len() - 1, true)
+        } else {
+            println!("access {}", access_at);
+            (access_at, false)
         }
     }
 
-    fn gen_wit_i_nlookup(
+    pub fn gen_wit_i(
+        //_nlookup(
         &self,
-        move_num: (usize, usize),
+        move_num: (usize, usize), // iterator
         batch_num: usize,
         current_state: usize,
         running_q: Option<Vec<Integer>>,
@@ -1243,7 +1100,7 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
     ) {
         let mut wits = FxHashMap::default();
 
-        // generate claim v's (well, v isn't a real named var, generate the states/chars)
+        // generate claim v's (well, generate the states/chars)
         let mut state_i = current_state;
         let mut next_state = 0;
 
@@ -1258,6 +1115,7 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
 
             //println!("is EPSILON? {:#?}", is_epsilon);
             if is_epsilon {
+                //next_state = self.moves
                 next_state = self.delta[&(state_i, self.num_ab[&None])];
                 char_num = self.num_ab[&None]; // TODO
             } else {
@@ -1311,50 +1169,29 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
             new_wit(self.prover_accepting_state(batch_num)),
         );
 
-        match self.commit_type {
-            JCommit::HashChain => {
-                /*  for i in 0..=self.batch_size {
-                    wits.insert(
-                        format!("i_{}", i),
-                        new_wit(batch_num * self.batch_size + i + move_num.0),
-                    );
-                }*/
-                (
-                    wits,
-                    next_state,
-                    Some(next_running_q),
-                    Some(next_running_v),
-                    None,
-                    None,
-                    start_epsilons,
-                    None,
-                )
-            }
-            JCommit::Nlookup => {
-                assert!(doc_running_q.is_some() || batch_num == 0);
-                assert!(doc_running_v.is_some() || batch_num == 0);
-                let (w, next_doc_running_q, next_doc_running_v, next_doc_idx) = self
-                    .wit_nlookup_doc_commit(
-                        wits,
-                        move_num,
-                        batch_num,
-                        doc_running_q,
-                        doc_running_v,
-                        prev_doc_idx,
-                    );
-                wits = w;
-                (
-                    wits,
-                    next_state,
-                    Some(next_running_q),
-                    Some(next_running_v),
-                    Some(next_doc_running_q),
-                    Some(next_doc_running_v),
-                    start_epsilons,
-                    Some(next_doc_idx),
-                )
-            }
-        }
+        // commitment
+        assert!(doc_running_q.is_some() || batch_num == 0);
+        assert!(doc_running_v.is_some() || batch_num == 0);
+        let (w, next_doc_running_q, next_doc_running_v, next_doc_idx) = self
+            .wit_nlookup_doc_commit(
+                wits,
+                move_num,
+                batch_num,
+                doc_running_q,
+                doc_running_v,
+                prev_doc_idx,
+            );
+        wits = w;
+        (
+            wits,
+            next_state,
+            Some(next_running_q),
+            Some(next_running_v),
+            Some(next_doc_running_q),
+            Some(next_doc_running_v),
+            start_epsilons,
+            Some(next_doc_idx),
+        )
     }
 
     fn wit_nlookup_doc_commit(
@@ -1628,98 +1465,6 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
 
         (wits, next_running_q, next_running_v)
     }
-
-    // TODO BATCH SIZE (rn = 1)
-    fn gen_wit_i_polys(
-        &self,
-        move_num: (usize, usize),
-        batch_num: usize,
-        current_state: usize, // pass in the real one, let's deal with all the dummy stuff under
-        // the hood
-        doc_running_q: Option<Vec<Integer>>,
-        doc_running_v: Option<Integer>,
-        prev_doc_idx: Option<isize>,
-    ) -> (
-        FxHashMap<String, Value>,
-        usize,
-        Option<Vec<Integer>>,
-        Option<Integer>,
-        isize,
-        Option<isize>,
-    ) {
-        let mut wits = FxHashMap::default();
-        let mut state_i = current_state;
-        let mut next_state = 0;
-
-        let mut start_epsilons = -1;
-        for i in 0..self.batch_size {
-            let (access_at, is_epsilon) = self.access_doc_at(move_num, batch_num, i + move_num.0);
-
-            if is_epsilon {
-                wits.insert(format!("char_{}", i), new_wit(self.num_ab[&None]));
-                next_state = self.delta[&(state_i, self.num_ab[&None])];
-            } else {
-                wits.insert(format!("char_{}", i), new_wit(self.udoc[access_at]));
-                println!(
-                    "search for ({:#?},{:#?}) in delta",
-                    state_i,
-                    self.udoc[access_at].clone(),
-                    //self.delta.clone()
-                );
-                next_state = self.delta[&(state_i, self.udoc[access_at].clone())];
-                println!("next state {:#?}", next_state);
-            }
-
-            wits.insert(format!("state_{}", i), new_wit(state_i));
-
-            if (start_epsilons == -1) && is_epsilon {
-                start_epsilons = i as isize;
-            }
-
-            state_i = next_state;
-        }
-        wits.insert(format!("state_{}", self.batch_size), new_wit(state_i));
-
-        wits.insert(
-            format!("accepting"),
-            new_wit(self.prover_accepting_state(batch_num)),
-        );
-
-        match self.commit_type {
-            JCommit::HashChain => {
-                /*  for i in 0..=self.batch_size {
-                    wits.insert(
-                        format!("i_{}", i),
-                        new_wit(batch_num * self.batch_size + i + move_num.0),
-                    );
-                }*/
-                // values not actually checked or used
-                (wits, next_state, None, None, start_epsilons, None)
-            }
-            JCommit::Nlookup => {
-                assert!(doc_running_q.is_some() || batch_num == 0);
-                assert!(doc_running_v.is_some() || batch_num == 0);
-                let (w, next_doc_running_q, next_doc_running_v, next_doc_idx) = self
-                    .wit_nlookup_doc_commit(
-                        wits,
-                        move_num,
-                        batch_num,
-                        doc_running_q,
-                        doc_running_v,
-                        prev_doc_idx,
-                    );
-                wits = w;
-                (
-                    wits,
-                    next_state,
-                    Some(next_doc_running_q),
-                    Some(next_doc_running_v),
-                    start_epsilons,
-                    Some(next_doc_idx),
-                )
-            }
-        }
-    }
 }
 
 pub fn ceil_div(a: usize, b: usize) -> usize {
@@ -1926,21 +1671,10 @@ mod tests {
                     let sc = Sponge::<<G1 as Group>::Scalar, typenum::U4>::api_constants(
                         Strength::Standard,
                     );
-                    let mut r1cs_converter = R1CS::new(
-                        &safa,
-                        &chars,
-                        s,
-                        sc.clone(),
-                        Some(b.clone()),
-                        Some(c.clone()),
-                    );
 
-                    let reef_commit = gen_commitment(
-                        r1cs_converter.commit_type,
-                        r1cs_converter.udoc.clone(),
-                        &sc,
-                    );
-                    r1cs_converter.set_commitment(reef_commit.clone());
+                    let reef_commit = gen_commitment(r1cs_converter.udoc.clone(), &sc);
+
+                    let mut r1cs_converter = R1CS::new(&safa, &chars, s, reef_commit, sc.clone());
 
                     assert_eq!(expected_match, r1cs_converter.is_match);
 
@@ -1974,8 +1708,8 @@ mod tests {
                             _start_epsilons,
                             doc_idx,
                         ) = r1cs_converter.gen_wit_i(
-                            move_i,
-                            0, // i, TODO
+                            (0, 0), // TODO
+                            0,      // i, TODO
                             current_state,
                             running_q.clone(),
                             running_v.clone(),
@@ -2012,7 +1746,6 @@ mod tests {
                     };
 
                     final_clear_checks(
-                        r1cs_converter.batching,
                         reef_commit,
                         <G1 as Group>::Scalar::from(1), // dummy, not checked
                         &r1cs_converter.table,
@@ -2059,8 +1792,8 @@ mod tests {
     fn naive_test() {
         init();
         test_func_no_hash(
-            "ab".to_string(),
-            "^b(?=a)abb$".to_string(),
+            "abc".to_string(),
+            "^b(?=a)ab(b|c)$".to_string(),
             "baabb".to_string(),
             vec![1], // 2],
             true,

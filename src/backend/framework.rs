@@ -38,8 +38,6 @@ struct ProofInfo {
     commit: ReefCommitment<<G1 as Group>::Scalar>,
     table: Vec<Integer>,
     doc_len: usize,
-    eval_type: JBatching,
-    commit_type: JCommit,
 }
 
 #[cfg(feature = "metrics")]
@@ -65,34 +63,26 @@ pub fn run_backend(
         let sc = Sponge::<<G1 as Group>::Scalar, typenum::U4>::api_constants(Strength::Standard);
 
         #[cfg(feature = "metrics")]
+        log::tic(Component::Compiler, "R1CS", "Commitment Generations");
+        let reef_commit = gen_commitment(r1cs_converter.udoc.clone(), &sc);
+
+        #[cfg(feature = "metrics")]
+        log::stop(Component::Compiler, "R1CS", "Commitment Generations");
+
+        #[cfg(feature = "metrics")]
         log::tic(
             Component::Compiler,
             "R1CS",
             "Optimization Selection, R1CS precomputations",
         );
-        let mut r1cs_converter = R1CS::new(
-            &safa,
-            &doc,
-            temp_batch_size,
-            sc.clone(),
-            batching_type,
-            commit_doctype,
-        );
+
+        let mut r1cs_converter = R1CS::new(&safa, &doc, temp_batch_size, reef_commit, sc.clone());
         #[cfg(feature = "metrics")]
         log::stop(
             Component::Compiler,
             "R1CS",
             "Optimization Selection, R1CS precomputations",
         );
-
-        #[cfg(feature = "metrics")]
-        log::tic(Component::Compiler, "R1CS", "Commitment Generations");
-        let reef_commit =
-            gen_commitment(r1cs_converter.commit_type, r1cs_converter.udoc.clone(), &sc);
-        r1cs_converter.set_commitment(reef_commit.clone());
-
-        #[cfg(feature = "metrics")]
-        log::stop(Component::Compiler, "R1CS", "Commitment Generations");
 
         #[cfg(feature = "metrics")]
         log::tic(Component::Compiler, "R1CS", "To Circuit");
@@ -117,8 +107,6 @@ pub fn run_backend(
                 commit: reef_commit,
                 table: r1cs_converter.table.clone(),
                 doc_len: r1cs_converter.udoc.len(),
-                eval_type: r1cs_converter.batching,
-                commit_type: r1cs_converter.commit_type,
             })
             .unwrap();
 
@@ -149,59 +137,24 @@ fn setup<'a>(
     let qd_len = logmn(r1cs_converter.udoc.len());
 
     // use "empty" (witness-less) circuit to generate nova F
-    let empty_glue = match (r1cs_converter.batching, r1cs_converter.commit_type) {
-        (JBatching::NaivePolys, JCommit::HashChain) => {
-            vec![
-                GlueOpts::PolyHash((
-                    <G1 as Group>::Scalar::from(0),
-                    <G1 as Group>::Scalar::from(0),
-                )),
-                GlueOpts::PolyHash((
-                    <G1 as Group>::Scalar::from(0),
-                    <G1 as Group>::Scalar::from(0),
-                )),
-            ]
-        }
-        (JBatching::Nlookup, JCommit::HashChain) => {
-            let zero = <G1 as Group>::Scalar::from(0);
+    let empty_glue = {
+        let q = vec![<G1 as Group>::Scalar::from(0); q_len];
 
-            let q = vec![<G1 as Group>::Scalar::from(0); q_len];
+        let v = <G1 as Group>::Scalar::from(0);
+        let q_idx = <G1 as Group>::Scalar::from(0);
+        let doc_q = vec![<G1 as Group>::Scalar::from(0); qd_len];
 
-            vec![
-                GlueOpts::NlHash((zero.clone(), zero.clone(), q.clone(), zero.clone())),
-                GlueOpts::NlHash((zero.clone(), zero.clone(), q, zero.clone())),
-            ]
-        }
-        (JBatching::NaivePolys, JCommit::Nlookup) => {
-            let q_idx = <G1 as Group>::Scalar::from(0);
-            let doc_q = vec![<G1 as Group>::Scalar::from(0); qd_len];
-
-            let doc_v = <G1 as Group>::Scalar::from(0);
-
-            vec![
-                GlueOpts::PolyNL((q_idx.clone(), doc_q.clone(), doc_v.clone())),
-                GlueOpts::PolyNL((q_idx, doc_q, doc_v)),
-            ]
-        }
-        (JBatching::Nlookup, JCommit::Nlookup) => {
-            let q = vec![<G1 as Group>::Scalar::from(0); q_len];
-
-            let v = <G1 as Group>::Scalar::from(0);
-            let q_idx = <G1 as Group>::Scalar::from(0);
-            let doc_q = vec![<G1 as Group>::Scalar::from(0); qd_len];
-
-            let doc_v = <G1 as Group>::Scalar::from(0);
-            vec![
-                GlueOpts::NlNl((
-                    q.clone(),
-                    v.clone(),
-                    q_idx.clone(),
-                    doc_q.clone(),
-                    doc_v.clone(),
-                )),
-                GlueOpts::NlNl((q, v, q_idx, doc_q, doc_v)),
-            ]
-        }
+        let doc_v = <G1 as Group>::Scalar::from(0);
+        vec![
+            GlueOpts::NlNl((
+                q.clone(),
+                v.clone(),
+                q_idx.clone(),
+                doc_q.clone(),
+                doc_v.clone(),
+            )),
+            GlueOpts::NlNl((q, v, q_idx, doc_q, doc_v)),
+        ]
     };
 
     let circuit_primary: NFAStepCircuit<<G1 as Group>::Scalar> = NFAStepCircuit::new(
@@ -262,75 +215,31 @@ fn setup<'a>(
         pp.num_variables().1
     );
 
-
-    let moves : Vec<_> = r1cs_converter.moves.clone().unwrap().into_iter().collect();
-    let move_0 = (moves[0].3, moves[0].4);
-
     // this variable could be two different types of things, which is potentially dicey, but
     // literally whatever
     let blind = match r1cs_converter.reef_commit.clone().unwrap() {
-        ReefCommitment::HashChain(hcs) => hcs.blind,
+        ReefCommitment::HashChain(hcs) => panic!(),
         ReefCommitment::Nlookup(dcs) => dcs.commit_doc_hash,
-    };
-    // TODO only do this for HC
-    let prev_hash = match r1cs_converter.reef_commit.clone().unwrap() {
-        ReefCommitment::HashChain(_) => r1cs_converter.prover_calc_hash(blind, true, 0, move_0.0),
-        ReefCommitment::Nlookup(_) => <G1 as Group>::Scalar::from(0),
     };
 
     let current_state = r1cs_converter.safa.get_init().index();
 
-    let z0_primary = match (r1cs_converter.batching, r1cs_converter.commit_type) {
-        (JBatching::NaivePolys, JCommit::HashChain) => {
-            vec![
-                <G1 as Group>::Scalar::from(current_state as u64),
-                <G1 as Group>::Scalar::from(move_0.0 as u64),
-                prev_hash.clone(),
-                <G1 as Group>::Scalar::from(r1cs_converter.prover_accepting_state(current_state)),
-            ]
-        }
-        (JBatching::Nlookup, JCommit::HashChain) => {
-            let mut z = vec![
-                <G1 as Group>::Scalar::from(current_state as u64),
-                <G1 as Group>::Scalar::from(move_0.0 as u64), //<G1 as Group>::Scalar::from(0), //nfa.ab_to_num(&doc[0]) as u64),
-                prev_hash.clone(),
-            ];
-            z.append(&mut vec![<G1 as Group>::Scalar::from(0); q_len]);
-            z.push(int_to_ff(r1cs_converter.table[0].clone()));
-            z.push(<G1 as Group>::Scalar::from(
-                r1cs_converter.prover_accepting_state(current_state),
-            ));
-            z
-        }
-        (JBatching::NaivePolys, JCommit::Nlookup) => {
-            let mut z = vec![<G1 as Group>::Scalar::from(current_state as u64)];
+    let z0_primary = {
+        let mut z = vec![<G1 as Group>::Scalar::from(current_state as u64)];
 
-            z.push(<G1 as Group>::Scalar::from(move_0.0 as u64));
+        z.append(&mut vec![<G1 as Group>::Scalar::from(0); q_len]);
+        z.push(int_to_ff(r1cs_converter.table[0].clone()));
 
-            z.append(&mut vec![<G1 as Group>::Scalar::from(0); qd_len]);
-            z.push(<G1 as Group>::Scalar::from(r1cs_converter.udoc[0] as u64));
-            z.push(<G1 as Group>::Scalar::from(
-                r1cs_converter.prover_accepting_state(current_state),
-            ));
-            z
-        }
-        (JBatching::Nlookup, JCommit::Nlookup) => {
-            let mut z = vec![<G1 as Group>::Scalar::from(current_state as u64)];
-
-            z.append(&mut vec![<G1 as Group>::Scalar::from(0); q_len]);
-            z.push(int_to_ff(r1cs_converter.table[0].clone()));
-
-            z.push(<G1 as Group>::Scalar::from(move_0.0 as u64));
-            z.append(&mut vec![<G1 as Group>::Scalar::from(0); qd_len]);
-            z.push(<G1 as Group>::Scalar::from(r1cs_converter.udoc[0] as u64));
-            z.push(<G1 as Group>::Scalar::from(
-                r1cs_converter.prover_accepting_state(current_state),
-            ));
-            z
-        }
+        z.push(<G1 as Group>::Scalar::from(0 as u64)); // substring todo
+        z.append(&mut vec![<G1 as Group>::Scalar::from(0); qd_len]);
+        z.push(<G1 as Group>::Scalar::from(r1cs_converter.udoc[0] as u64));
+        z.push(<G1 as Group>::Scalar::from(
+            r1cs_converter.prover_accepting_state(current_state),
+        ));
+        z
     };
 
-    let num_steps = r1cs_converter.moves.clone().unwrap().len();
+    let num_steps = r1cs_converter.foldings.len();
     assert!(num_steps > 0, "trying to prove something about 0 foldings");
 
     (num_steps, z0_primary, pp)
@@ -363,21 +272,9 @@ fn solve<'a>(
     let mut next_doc_running_q;
     let mut next_doc_running_v;
 
-    let moves : Vec<_> = r1cs_converter.moves.clone().unwrap().into_iter().collect();
     let mut start_of_epsilons;
     let mut prev_doc_idx = None;
     let mut next_doc_idx;
-
-    // TODO only do this for HC
-    let mut prev_hash = match r1cs_converter.reef_commit.clone().unwrap() {
-        ReefCommitment::HashChain(_) => r1cs_converter.prover_calc_hash(
-            blind,
-            true,
-            0,
-            moves[0].3,
-        ),
-        ReefCommitment::Nlookup(_) => <G1 as Group>::Scalar::from(0),
-    };
 
     let mut current_state = r1cs_converter.safa.get_init().index();
     // TODO don't recalc :(
@@ -391,7 +288,6 @@ fn solve<'a>(
         #[cfg(feature = "metrics")]
         log::tic(Component::Solver, &test, "witness generation");
         // allocate real witnesses for round i
-        let move_i = (moves[i].3, moves[i].4);
         (
             wits,
             next_state,
@@ -402,8 +298,8 @@ fn solve<'a>(
             start_of_epsilons,
             next_doc_idx,
         ) = r1cs_converter.gen_wit_i(
-            move_i,
-            0, // batch == 0 always right now i,
+            (0, 0), // TODO
+            0,      // batch == 0 always right now i,
             next_state,
             running_q.clone(),
             running_v.clone(),
@@ -416,151 +312,52 @@ fn solve<'a>(
 
         circ_data.check_all(&wits);
 
-        let glue = match (r1cs_converter.batching, r1cs_converter.commit_type) {
-            (JBatching::NaivePolys, JCommit::HashChain) => {
-                #[cfg(feature = "metrics")]
-                log::tic(Component::Solver, &test, "calculate hash");
-                let next_hash = r1cs_converter.prover_calc_hash(
-                    prev_hash,
-                    false,
-                    move_i.0, // TODO + (i * r1cs_converter.batch_size),
-                    r1cs_converter.batch_size,
-                );
+        let glue = {
+            let q = match running_q {
+                Some(rq) => rq.into_iter().map(|x| int_to_ff(x)).collect(),
+                None => vec![<G1 as Group>::Scalar::from(0); q_len],
+            };
 
-                let i_0 = <G1 as Group>::Scalar::from(
-                    move_i.0 as u64, //(r1cs_converter.substring.0 + (i * r1cs_converter.batch_size)) as u64,
-                );
-                let i_last = <G1 as Group>::Scalar::from(
-                    (move_i.0 + r1cs_converter.batch_size) as u64, //(r1cs_converter.substring.0 + ((i + 1) * r1cs_converter.batch_size)) as u64,
-                );
-                let g = vec![
-                    GlueOpts::PolyHash((i_0, prev_hash)),
-                    GlueOpts::PolyHash((i_last, next_hash)),
-                ];
-                prev_hash = next_hash;
-                #[cfg(feature = "metrics")]
-                log::stop(Component::Solver, &test, "calculate hash");
-                g
-            }
-            (JBatching::Nlookup, JCommit::HashChain) => {
-                #[cfg(feature = "metrics")]
-                log::tic(Component::Solver, &test, "calculate hash");
-                let next_hash = r1cs_converter.prover_calc_hash(
-                    prev_hash,
-                    false,
-                    move_i.0, //r1cs_converter.substring.0 + (i * r1cs_converter.batch_size),
-                    r1cs_converter.batch_size,
-                );
+            let v = match running_v {
+                Some(rv) => int_to_ff(rv),
+                None => int_to_ff(r1cs_converter.table[0].clone()),
+            };
 
-                let q = match running_q {
-                    Some(rq) => rq.into_iter().map(|x| int_to_ff(x)).collect(),
-                    None => vec![<G1 as Group>::Scalar::from(0); q_len],
-                };
+            let next_q = next_running_q
+                .clone()
+                .unwrap()
+                .into_iter()
+                .map(|x| int_to_ff(x))
+                .collect();
+            let next_v = int_to_ff(next_running_v.clone().unwrap());
 
-                let v = match running_v {
-                    Some(rv) => int_to_ff(rv),
-                    None => int_to_ff(r1cs_converter.table[0].clone()),
-                };
+            let q_idx = <G1 as Group>::Scalar::from(0 as u64); //substring
 
-                let next_q = next_running_q
-                    .clone()
-                    .unwrap()
-                    .into_iter()
-                    .map(|x| int_to_ff(x))
-                    .collect();
-                let next_v = int_to_ff(next_running_v.clone().unwrap());
+            let next_q_idx = //             V substring
+                <G1 as Group>::Scalar::from((0 + r1cs_converter.batch_size) as u64);
 
-                let i_0 = <G1 as Group>::Scalar::from(
-                    move_i.0 as u64, //(r1cs_converter.substring.0 + (i * r1cs_converter.batch_size)) as u64,
-                );
-                let i_last = <G1 as Group>::Scalar::from(
-                    (move_i.0 + r1cs_converter.batch_size) as u64, //(r1cs_converter.substring.0 + ((i + 1) * r1cs_converter.batch_size)) as u64,
-                );
-                let g = vec![
-                    GlueOpts::NlHash((i_0, prev_hash, q, v)),
-                    GlueOpts::NlHash((i_last, next_hash, next_q, next_v)),
-                ];
-                prev_hash = next_hash;
-                g
-            }
-            (JBatching::NaivePolys, JCommit::Nlookup) => {
-                // TODO fix
-                let q_idx = <G1 as Group>::Scalar::from(move_i.0 as u64);
-                println!("Q IDX {:#?}", q_idx);
+            println!("Q IDX {:#?}", q_idx);
+            println!("NEXT Q IDX {:#?}", next_q_idx);
+            let doc_q = match doc_running_q {
+                Some(rq) => rq.into_iter().map(|x| int_to_ff(x)).collect(),
+                None => vec![<G1 as Group>::Scalar::from(0); qd_len],
+            };
 
-                let doc_q = match doc_running_q {
-                    Some(rq) => rq.into_iter().map(|x| int_to_ff(x)).collect(),
-                    None => vec![<G1 as Group>::Scalar::from(0); qd_len],
-                };
-
-                let doc_v = match doc_running_v {
-                    Some(rv) => int_to_ff(rv),
-                    None => <G1 as Group>::Scalar::from(r1cs_converter.udoc[0] as u64),
-                };
-
-                let next_q_idx =
-                    <G1 as Group>::Scalar::from((move_i.0 + r1cs_converter.batch_size) as u64); //<G1 as Group>::Scalar::from(next_doc_idx.unwrap() as u64);
-
-                println!("NEXT Q IDX {:#?}", next_q_idx);
-                let next_doc_q = next_doc_running_q
-                    .clone()
-                    .unwrap()
-                    .into_iter()
-                    .map(|x| int_to_ff(x))
-                    .collect();
-                let next_doc_v = int_to_ff(next_doc_running_v.clone().unwrap());
-                vec![
-                    GlueOpts::PolyNL((q_idx, doc_q, doc_v)),
-                    GlueOpts::PolyNL((next_q_idx, next_doc_q, next_doc_v)),
-                ]
-            }
-            (JBatching::Nlookup, JCommit::Nlookup) => {
-                let q = match running_q {
-                    Some(rq) => rq.into_iter().map(|x| int_to_ff(x)).collect(),
-                    None => vec![<G1 as Group>::Scalar::from(0); q_len],
-                };
-
-                let v = match running_v {
-                    Some(rv) => int_to_ff(rv),
-                    None => int_to_ff(r1cs_converter.table[0].clone()),
-                };
-
-                let next_q = next_running_q
-                    .clone()
-                    .unwrap()
-                    .into_iter()
-                    .map(|x| int_to_ff(x))
-                    .collect();
-                let next_v = int_to_ff(next_running_v.clone().unwrap());
-
-                let q_idx = <G1 as Group>::Scalar::from(move_i.0 as u64);
-
-                let next_q_idx =
-                    <G1 as Group>::Scalar::from((move_i.0 + r1cs_converter.batch_size) as u64);
-
-                println!("Q IDX {:#?}", q_idx);
-                println!("NEXT Q IDX {:#?}", next_q_idx);
-                let doc_q = match doc_running_q {
-                    Some(rq) => rq.into_iter().map(|x| int_to_ff(x)).collect(),
-                    None => vec![<G1 as Group>::Scalar::from(0); qd_len],
-                };
-
-                let doc_v = match doc_running_v {
-                    Some(rv) => int_to_ff(rv),
-                    None => <G1 as Group>::Scalar::from(r1cs_converter.udoc[0] as u64),
-                };
-                let next_doc_q = next_doc_running_q
-                    .clone()
-                    .unwrap()
-                    .into_iter()
-                    .map(|x| int_to_ff(x))
-                    .collect();
-                let next_doc_v = int_to_ff(next_doc_running_v.clone().unwrap());
-                vec![
-                    GlueOpts::NlNl((q, v, q_idx, doc_q, doc_v)),
-                    GlueOpts::NlNl((next_q, next_v, next_q_idx, next_doc_q, next_doc_v)),
-                ]
-            }
+            let doc_v = match doc_running_v {
+                Some(rv) => int_to_ff(rv),
+                None => <G1 as Group>::Scalar::from(r1cs_converter.udoc[0] as u64),
+            };
+            let next_doc_q = next_doc_running_q
+                .clone()
+                .unwrap()
+                .into_iter()
+                .map(|x| int_to_ff(x))
+                .collect();
+            let next_doc_v = int_to_ff(next_doc_running_v.clone().unwrap());
+            vec![
+                GlueOpts::NlNl((q, v, q_idx, doc_q, doc_v)),
+                GlueOpts::NlNl((next_q, next_v, next_q_idx, next_doc_q, next_doc_v)),
+            ]
         };
 
         let values: Option<Vec<_>> = Some(wits).map(|values| {
@@ -585,7 +382,7 @@ fn solve<'a>(
             ],
             glue,
             blind,
-            move_i.0 == 0,
+            0 == 0, // SUBSTRING
             <G1 as Group>::Scalar::from(r1cs_converter.safa.ab.len() as u64),
             start_of_epsilons,
             vec![
@@ -693,8 +490,6 @@ fn prove_and_verify(recv: Receiver<NFAStepCircuit<<G1 as Group>::Scalar>>, proof
         proof_info.commit,
         proof_info.table,
         proof_info.doc_len,
-        proof_info.eval_type,
-        proof_info.commit_type,
     );
 
     #[cfg(feature = "metrics")]
@@ -708,8 +503,6 @@ fn verify(
     reef_commit: ReefCommitment<<G1 as Group>::Scalar>,
     table: Vec<Integer>,
     doc_len: usize,
-    eval_type: JBatching,
-    commit_type: JCommit,
 ) {
     let q_len = logmn(table.len());
     let qd_len = logmn(doc_len);
@@ -738,64 +531,17 @@ fn verify(
 
     // eval type, reef commitment, accepting state bool, table, doc, final_q, final_v, final_hash,
     // final_doc_q, final_doc_v
-    match (eval_type, commit_type) {
-        (JBatching::NaivePolys, JCommit::HashChain) => {
-            final_clear_checks(
-                eval_type,
-                reef_commit,
-                zn[3],
-                &table, // clones in function?
-                doc_len,
-                None,
-                None,
-                Some(zn[2]),
-                None,
-                None,
-            );
-        }
-        (JBatching::NaivePolys, JCommit::Nlookup) => {
-            final_clear_checks(
-                eval_type,
-                reef_commit,
-                zn[3 + qd_len],
-                &table,
-                doc_len,
-                None,
-                None,
-                None,
-                Some(zn[2..(qd_len + 2)].to_vec()),
-                Some(zn[2 + qd_len]),
-            );
-        }
-        (JBatching::Nlookup, JCommit::HashChain) => {
-            final_clear_checks(
-                eval_type,
-                reef_commit,
-                zn[3 + q_len + 1],
-                &table,
-                doc_len,
-                Some(zn[3..(3 + q_len)].to_vec()),
-                Some(zn[3 + q_len]),
-                Some(zn[2]),
-                None,
-                None,
-            );
-        }
-        (JBatching::Nlookup, JCommit::Nlookup) => {
-            final_clear_checks(
-                eval_type,
-                reef_commit,
-                zn[2 + q_len + 1 + qd_len + 1],
-                &table,
-                doc_len,
-                Some(zn[1..(q_len + 1)].to_vec()),
-                Some(zn[q_len + 1]),
-                None,
-                Some(zn[(2 + q_len + 1)..(2 + q_len + 1 + qd_len)].to_vec()),
-                Some(zn[2 + q_len + 1 + qd_len]),
-            );
-        }
-    }
+    final_clear_checks(
+        reef_commit,
+        zn[2 + q_len + 1 + qd_len + 1],
+        &table,
+        doc_len,
+        Some(zn[1..(q_len + 1)].to_vec()),
+        Some(zn[q_len + 1]),
+        None,
+        Some(zn[(2 + q_len + 1)..(2 + q_len + 1 + qd_len)].to_vec()),
+        Some(zn[2 + q_len + 1 + qd_len]),
+    );
     #[cfg(feature = "metrics")]
     log::stop(Component::Verifier, "Verification", "Final Clear Checks");
 }
@@ -805,8 +551,8 @@ mod tests {
 
     use crate::backend::framework::*;
     use crate::backend::r1cs_helper::init;
-    use crate::safa::SAFA;
     use crate::regex::Regex;
+    use crate::safa::SAFA;
 
     fn backend_test(
         ab: String,
