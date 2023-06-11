@@ -45,7 +45,7 @@ pub struct R1CS<'a, F: PrimeField, C: Clone> {
     pub udoc: Vec<usize>,
     pub idoc: Vec<Integer>,
     pub doc_extend: usize,
-    pub moves: LinkedList<(
+    pub trace: LinkedList<(
         NodeIndex<u32>,
         Either<char, Skip>,
         NodeIndex<u32>,
@@ -108,12 +108,9 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
 
         // TODO timing here
 
-        let moves = safa.solve(&doc).unwrap();
+        let trace = safa.solve(&doc).unwrap();
 
-        let mut sel_batch_size = 1;
-        for m in moves.clone() {
-            sel_batch_size = max(sel_batch_size, m.4 - m.3);
-        }
+        let sel_batch_size = trace.len(); // TODO!!!!!
 
         println!("BATCH {:#?}", sel_batch_size);
 
@@ -330,7 +327,7 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
             udoc: usize_doc, //usizes
             idoc: int_doc,   // big ints
             doc_extend: epsilon_to_add,
-            moves,
+            trace,
             chunks,
             skips,
             pc: pcs,
@@ -1017,23 +1014,11 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
             .push(new_var(format!("{}_next_running_claim", id)));
     }
 
-    fn access_doc_at(&self, move_num: (usize, usize), batch_num: usize, i: usize) -> (usize, bool) {
-        let access_at = i; //batch_num * self.batch_size + i;
-
-        if access_at >= move_num.1 {
-            println!("access {}", self.udoc.len() - 1);
-            (self.udoc.len() - 1, true)
-        } else {
-            println!("access {}", access_at);
-            (access_at, false)
-        }
-    }
-
     pub fn gen_wit_i(
         //_nlookup(
         &self,
-        fold_num: usize,
-        move_num: (usize, usize), // iterator
+        //    fold_num: usize,
+        //    move_num: (usize, usize), // iterator
         batch_num: usize,
         current_state: usize,
         running_q: Option<Vec<Integer>>,
@@ -1056,26 +1041,37 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
         // generate claim v's (well, generate the states/chars)
         let mut state_i = current_state;
         let mut next_state = 0;
+        let mut char_num = 0;
 
         let mut v = vec![];
         let mut q = vec![];
         let mut start_epsilons = -1;
+
         for i in 1..=self.batch_size {
-            let (access_at, is_epsilon) =
-                self.access_doc_at(move_num, batch_num, i - 1 + move_num.0);
+            let (source, edge, target, c_start, c_end) = self.trace.pop_front();
 
-            let char_num;
+            match edge.weight().clone() {
+                Either(Err(Skip::Offset(u))) if u == 0 => {
+                    // EPSILON
+                    assert_eq!(state_i, source);
+                    next_state = target;
+                    char_num = self.num_ab[&None];
+                }
 
-            //println!("is EPSILON? {:#?}", is_epsilon);
-            if is_epsilon {
-                //next_state = self.moves
-                next_state = self.moves.next();
-
-                //delta[&(state_i, self.num_ab[&None])];
-                char_num = self.num_ab[&None]; // TODO
-            } else {
-                //next_state = self.delta[&(state_i, self.udoc[access_at])];
-                char_num = self.udoc[access_at];
+                Either(Err(Skip::Offset(u))) => {
+                    unimplemented!();
+                }
+                Either(Err(Skip::Choice(us))) => {
+                    unimplemented!();
+                }
+                Either(Err(Skip::Star)) => {
+                    unimplemented!();
+                }
+                Either(Ok(ch)) => {
+                    assert_eq!(state_i, source);
+                    next_state = target;
+                    char_num = self.num_ab[&ch];
+                }
             }
 
             //println!("Char {:#?}", char_num);
@@ -1083,10 +1079,6 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
 
             wits.insert(format!("char_{}", i - 1), new_wit(char_num));
             wits.insert(format!("state_{}", i - 1), new_wit(state_i));
-
-            if (start_epsilons == -1) && is_epsilon {
-                start_epsilons = (i - 1) as isize;
-            }
 
             // v_i = (state_i * (#states*#chars)) + (state_i+1 * #chars) + char_i
             let num_states = self.safa.g.node_count();
@@ -1115,7 +1107,7 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
 
         wits.insert(
             format!("accepting"),
-            new_wit(self.prover_accepting_state(batch_num)),
+            new_wit(self.prover_accepting_state(state_i)),
         );
 
         // commitment
@@ -1124,7 +1116,7 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
         let (w, next_doc_running_q, next_doc_running_v, next_doc_idx) = self
             .wit_nlookup_doc_commit(
                 wits,
-                move_num,
+                //move_num,
                 batch_num,
                 doc_running_q,
                 doc_running_v,
@@ -1138,7 +1130,7 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
             Some(next_running_v),
             Some(next_doc_running_q),
             Some(next_doc_running_v),
-            start_epsilons,
+            //     start_epsilons,
             Some(next_doc_idx),
         )
     }
@@ -1146,8 +1138,9 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
     fn wit_nlookup_doc_commit(
         &self,
         mut wits: FxHashMap<String, Value>,
-        move_num: (usize, usize),
+        //move_num: (usize, usize),
         batch_num: usize,
+        access_at: Vec<usize>,
         running_q: Option<Vec<Integer>>,
         running_v: Option<Integer>,
         prev_idx: Option<isize>,
@@ -1155,19 +1148,19 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
         let mut v = vec![];
         let mut q = vec![];
         for i in 0..self.batch_size {
-            let (access_at, _is_epsilon) = self.access_doc_at(move_num, batch_num, i + move_num.0);
-            q.push(access_at);
+            q.push(access_at[i]);
 
-            v.push(self.idoc[access_at].clone());
+            v.push(self.idoc[access_at[i]].clone());
         }
 
         // q relations
         let prev_round_lookup = if prev_idx.is_some() {
             Integer::from(prev_idx.unwrap())
-        } else if move_num.0 == 0 {
+        } else if batch_num == 0 {
+            // idk if correct
             Integer::from(-1)
         } else {
-            Integer::from(move_num.0 - 1)
+            panic!();
         };
 
         println!("PREV ROUND Q LOOKUP {:#?}", prev_round_lookup.clone());
