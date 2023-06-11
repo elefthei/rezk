@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 #![allow(missing_docs)]
-pub mod ord;
 pub mod charclass;
+pub mod ord;
 pub mod parser;
 
 #[cfg(fuzz)]
@@ -9,12 +9,12 @@ pub mod arbitrary;
 
 use core::fmt;
 use core::fmt::Formatter;
-use std::collections::BTreeSet;
 use hashconsing::{consign, HConsed, HashConsign};
+use std::collections::BTreeSet;
 
-use crate::skip::Skip;
 use crate::regex::charclass::CharClass;
 use crate::regex::parser::RegexParser;
+use crate::skip::Skip;
 
 /// Hash-consed regex terms
 pub type Regex = HConsed<RegexF>;
@@ -64,7 +64,7 @@ impl RegexF {
     pub fn is_empty(&self) -> bool {
         match self {
             RegexF::CharClass(c) => c.is_empty(),
-            _ => false
+            _ => false,
         }
     }
 
@@ -94,14 +94,14 @@ impl RegexF {
     }
 
     /// Create a character class
-    pub fn charclass(v: Vec<(char,char)>) -> RegexF {
+    pub fn charclass(v: Vec<(char, char)>) -> RegexF {
         let c = CharClass::new(v);
         let size = c.interv_len();
         let char_max: usize = std::char::MAX as usize;
         if size == 0 {
             RegexF::empty() //empty
-        } else if size >= char_max && c.len()==1 {
-            RegexF::dot()  //check that this is correct
+        } else if size >= char_max && c.len() == 1 {
+            RegexF::dot() //check that this is correct
         } else {
             RegexF::CharClass(c.clone())
         }
@@ -124,17 +124,25 @@ impl RegexF {
             // Range*
             (RegexF::Range(x, i, _), RegexF::Star(y))
                 if *i == 0 && Some(true) == RegexF::partial_le(x, y) =>
-                Some(true),
+            {
+                Some(true)
+            }
             (RegexF::Star(x), RegexF::Range(y, i, _))
                 if *i == 0 && Some(false) == RegexF::partial_le(x, y) =>
-                Some(false),
+            {
+                Some(false)
+            }
             // Range
             (RegexF::Range(x, i1, j1), RegexF::Range(y, i2, j2))
                 if RegexF::partial_le(x, y) == Some(true) && i1 >= i2 && j1 <= j2 =>
-                Some(true),
+            {
+                Some(true)
+            }
             (RegexF::Range(x, i1, j1), RegexF::Range(y, i2, j2))
                 if RegexF::partial_le(x, y) == Some(false) && i1 <= i2 && j1 >= j2 =>
-                Some(false),
+            {
+                Some(false)
+            }
             // Star
             (RegexF::Star(a), RegexF::Star(b)) => RegexF::partial_le(a, b),
             // AltOpp
@@ -142,21 +150,21 @@ impl RegexF {
                 let x1b = RegexF::partial_le(x1, b)?;
                 let x2b = RegexF::partial_le(x2, b)?;
                 Some(x1b && x2b)
-            },
+            }
             // AltR
-            (_, RegexF::Alt(x1, _))
-                if Some(true) == RegexF::partial_le(a, x1) => Some(true),
+            (_, RegexF::Alt(x1, _)) if Some(true) == RegexF::partial_le(a, x1) => Some(true),
             // AltR
-            (_, RegexF::Alt(_, x2))
-                if Some(true) == RegexF::partial_le(a, x2) => Some(true),
+            (_, RegexF::Alt(_, x2)) if Some(true) == RegexF::partial_le(a, x2) => Some(true),
             // App
             (RegexF::App(ref a, ref x), RegexF::App(ref b, ref y)) => {
-                let ab = RegexF::partial_le(a,b)?; // a == b
-                let ba = RegexF::partial_le(b,a)?;
+                let ab = RegexF::partial_le(a, b)?; // a == b
+                let ba = RegexF::partial_le(b, a)?;
                 if ab && ba {
                     RegexF::partial_le(x, y)
-                } else { None }
-            },
+                } else {
+                    None
+                }
+            }
             (_, _) => None,
         }
     }
@@ -165,13 +173,13 @@ impl RegexF {
     pub fn and(a: &Self, b: &Self) -> Self {
         match (a, b) {
             _ if a == b => a.clone(),
-             // Left-associative [app]
+            // Left-associative [app]
             (_, RegexF::And(x, y)) => RegexF::and(&RegexF::and(a, x), y),
             (_, _) if a.is_empty() || b.is_empty() => RegexF::empty(),
             (RegexF::Not(o), _) if o.is_empty() || re::dotstar() == *o => b.clone(),
             (_, RegexF::Not(o)) if o.is_empty() || re::dotstar() == *o => a.clone(),
             _ if a > b => RegexF::and(b, a),
-            (_, _) => RegexF::And(G.mk(a.clone()), G.mk(b.clone()))
+            (_, _) => RegexF::And(G.mk(a.clone()), G.mk(b.clone())),
         }
     }
 
@@ -186,10 +194,15 @@ impl RegexF {
             // Range & star index math
             (RegexF::Range(ref a, i, j), _) if &*a.clone() == b => RegexF::range(a, i + 1, j + 1),
             (_, RegexF::Range(ref b, i, j)) if a == &*b.clone() => RegexF::range(b, i + 1, j + 1),
-            (RegexF::Range(a, i1, j1), RegexF::Range(b, i2, j2)) if a == b =>
-                RegexF::range(a, i1 + i2, j1 + j2),
-            (RegexF::Star(x), RegexF::Star(y)) if RegexF::partial_le(x, y)==Some(true) => b.clone(),
-            (RegexF::Star(x), RegexF::Star(y)) if RegexF::partial_le(y, x)==Some(true) => a.clone(),
+            (RegexF::Range(a, i1, j1), RegexF::Range(b, i2, j2)) if a == b => {
+                RegexF::range(a, i1 + i2, j1 + j2)
+            }
+            (RegexF::Star(x), RegexF::Star(y)) if RegexF::partial_le(x, y) == Some(true) => {
+                b.clone()
+            }
+            (RegexF::Star(x), RegexF::Star(y)) if RegexF::partial_le(y, x) == Some(true) => {
+                a.clone()
+            }
             // Right-associative [app]
             (RegexF::App(x, y), _) => RegexF::app(x, &RegexF::app(y, b)),
             (_, _) => RegexF::App(G.mk(a.clone()), G.mk(b.clone())),
@@ -251,18 +264,18 @@ impl RegexF {
             RegexF::And(ref a, ref b) => RegexF::alt(&RegexF::not(a), &RegexF::not(b)),
             RegexF::App(ref a, ref b) => RegexF::app(&RegexF::not(a), &RegexF::not(b)),
             // The negation of !r{0,j} = {0,j}!r | .{j+1,}
-            RegexF::Range(ref a, i, j) if *i == 0 =>
-                RegexF::alt(
-                    &RegexF::range(&RegexF::not(a), 0, *j),
-                    &RegexF::starplus(&RegexF::dot(), j+1)
-                ),
+            RegexF::Range(ref a, i, j) if *i == 0 => RegexF::alt(
+                &RegexF::range(&RegexF::not(a), 0, *j),
+                &RegexF::starplus(&RegexF::dot(), j + 1),
+            ),
             // The negation of !r{i,j} = .{0,i-1} | {i,j}!r | .{j+1, *}
-            RegexF::Range(ref a, i, j) =>
-                RegexF::alt(
-                    &RegexF::alt(
-                        &RegexF::range(&RegexF::dot(), 0, i-1),
-                        &RegexF::range(&RegexF::not(a), *i, *j)),
-                    &RegexF::starplus(&RegexF::dot(), j+1)),
+            RegexF::Range(ref a, i, j) => RegexF::alt(
+                &RegexF::alt(
+                    &RegexF::range(&RegexF::dot(), 0, i - 1),
+                    &RegexF::range(&RegexF::not(a), *i, *j),
+                ),
+                &RegexF::starplus(&RegexF::dot(), j + 1),
+            ),
             _ if a.is_empty() => RegexF::star(&RegexF::dot()),
             _ => RegexF::Not(G.mk(a.clone())),
         }
@@ -279,12 +292,9 @@ impl RegexF {
             _ if self.is_empty() => false,
             RegexF::Nil | RegexF::Star(_) => true,
             RegexF::Range(_, i, _) if *i == 0 => true,
-            RegexF::CharClass(_)
-            | RegexF::Dot
-            | RegexF::Range(_, _, _) => false,
+            RegexF::CharClass(_) | RegexF::Dot | RegexF::Range(_, _, _) => false,
             RegexF::Not(ref r) => !r.nullable(),
-            RegexF::And(ref a, ref b)
-            | RegexF::App(ref a, ref b) => a.nullable() && b.nullable(),
+            RegexF::And(ref a, ref b) | RegexF::App(ref a, ref b) => a.nullable() && b.nullable(),
             RegexF::Alt(ref a, ref b) => a.nullable() || b.nullable(),
         }
     }
@@ -298,30 +308,32 @@ impl RegexF {
     pub fn extract_and(&self) -> Option<BTreeSet<RegexF>> {
         match self {
             // (r | r' | ...) => [r, r', ...]
-            RegexF::And(ref a, ref b) =>
-                match (a.extract_and(), b.extract_and()) {
-                    (Some(mut a), Some(mut b)) => {
-                        a.append(&mut b); Some(a)
-                    },
-                    (Some(mut a), None) => {
-                        a.insert((**b).clone()); Some(a)
-                    },
-                    (None, Some(mut b)) => {
-                        b.insert((**a).clone()); Some(b)
-                    },
-                    _ => Some(BTreeSet::from([(**a).clone(),(**b).clone()]))
-                },
+            RegexF::And(ref a, ref b) => match (a.extract_and(), b.extract_and()) {
+                (Some(mut a), Some(mut b)) => {
+                    a.append(&mut b);
+                    Some(a)
+                }
+                (Some(mut a), None) => {
+                    a.insert((**b).clone());
+                    Some(a)
+                }
+                (None, Some(mut b)) => {
+                    b.insert((**a).clone());
+                    Some(b)
+                }
+                _ => Some(BTreeSet::from([(**a).clone(), (**b).clone()])),
+            },
             // (r & r') r2 ==> (r.* & r'r2)
             RegexF::App(ref a, ref b) => {
                 let mut children = a.extract_and()?;
                 let last = children.pop_last()?;
-                let mut chv : Vec<RegexF> = children.into_iter().collect();
+                let mut chv: Vec<RegexF> = children.into_iter().collect();
                 for c in &mut chv {
                     *c = RegexF::app(&c, &RegexF::dotstar());
                 }
                 chv.push(RegexF::app(&last, &*b));
                 Some(chv.into_iter().collect())
-            },
+            }
             _ => None,
         }
     }
@@ -330,31 +342,27 @@ impl RegexF {
     pub fn extract_alt(&self) -> Option<BTreeSet<RegexF>> {
         match self {
             // (r | r' | ...) => [r, r', ...]
-            RegexF::Alt(ref a, ref b) =>
-                match (a.extract_alt(), b.extract_alt()) {
-                    (Some(mut a), Some(mut b)) => {
-                        a.append(&mut b); Some(a)
-                    },
-                    (Some(mut a), None) => {
-                        a.insert((**b).clone()); Some(a)
-                    },
-                    (None, Some(mut b)) => {
-                        b.insert((**a).clone()); Some(b)
-                    },
-                    _ => Some(BTreeSet::from([(**a).clone(),(**b).clone()]))
-                },
+            RegexF::Alt(ref a, ref b) => match (a.extract_alt(), b.extract_alt()) {
+                (Some(mut a), Some(mut b)) => {
+                    a.append(&mut b);
+                    Some(a)
+                }
+                (Some(mut a), None) => {
+                    a.insert((**b).clone());
+                    Some(a)
+                }
+                (None, Some(mut b)) => {
+                    b.insert((**a).clone());
+                    Some(b)
+                }
+                _ => Some(BTreeSet::from([(**a).clone(), (**b).clone()])),
+            },
             // (r|r') r2 ==> (rr2 | r'r2)
-            RegexF::App(ref a, ref b) =>
-                a.extract_alt()
-                 .map(|children| {
-                    children
-                        .into_iter()
-                        .map(|c| RegexF::app(&c, &*b))
-                        .collect()
-                }),
+            RegexF::App(ref a, ref b) => a
+                .extract_alt()
+                .map(|children| children.into_iter().map(|c| RegexF::app(&c, &*b)).collect()),
             // Reduce ranges to [alt], since there are no skips at this point
-            RegexF::Range(ref a, i, j) =>
-                Some((*i..=*j).map(|x| a.repeat(x)).collect()),
+            RegexF::Range(ref a, i, j) => Some((*i..=*j).map(|x| a.repeat(x)).collect()),
             _ => None,
         }
     }
@@ -386,9 +394,9 @@ impl RegexF {
                 let (pa, rema) = a.extract_skip(ab)?;
                 match b.extract_skip(ab) {
                     Some((pb, remb)) if rema.is_nil() => Some((pa.app(&pb), remb)),
-                    _ => Some((pa, RegexF::app(&rema, b)))
+                    _ => Some((pa, RegexF::app(&rema, b))),
                 }
-            },
+            }
             _ => None,
         }
     }
@@ -398,7 +406,7 @@ impl RegexF {
         match n {
             0 => RegexF::nil(),
             1 => self.clone(),
-            n => RegexF::app(&self.repeat(n-1), &self)
+            n => RegexF::app(&self.repeat(n - 1), &self),
         }
     }
 
@@ -423,12 +431,12 @@ impl RegexF {
 
 /// Top level module with hash-consing constructors
 pub mod re {
-    use std::collections::BTreeSet;
-    use hashconsing::HashConsign;
     use crate::regex::charclass::CharClass;
-    use crate::regex::{RegexF, Regex};
-    use crate::skip::Skip;
     use crate::regex::G;
+    use crate::regex::{Regex, RegexF};
+    use crate::skip::Skip;
+    use hashconsing::HashConsign;
+    use std::collections::BTreeSet;
 
     /// Constructor
     pub fn new<'a>(s: &'a str) -> Regex {
@@ -507,12 +515,14 @@ pub mod re {
 
     /// Extract an [alt] set from a regex, use distributivity to append the rest
     pub fn extract_alt(a: &Regex) -> Option<BTreeSet<Regex>> {
-        (*a).extract_alt().map(|o| o.into_iter().map(|rf| G.mk(rf)).collect())
+        (*a).extract_alt()
+            .map(|o| o.into_iter().map(|rf| G.mk(rf)).collect())
     }
 
     /// Extract an [and] set from a regex, for [(a & b)c => [a, bc]]
     pub fn extract_and(a: &Regex) -> Option<BTreeSet<Regex>> {
-        (*a).extract_and().map(|o| o.into_iter().map(|rf| G.mk(rf)).collect())
+        (*a).extract_and()
+            .map(|o| o.into_iter().map(|rf| G.mk(rf)).collect())
     }
 }
 
@@ -549,10 +559,7 @@ fn test_regex_ranges() {
 #[test]
 fn test_regex_dot_star() {
     assert_eq!(
-        re::app(
-            re::app(re::dotstar(), re::character('c')),
-            re::dotstar()
-        ),
+        re::app(re::app(re::dotstar(), re::character('c')), re::dotstar()),
         re::new("^.*c")
     );
 }
@@ -571,9 +578,7 @@ fn test_regex_repetition_range() {
 #[test]
 fn test_regex_negative_char_class() {
     assert_eq!(
-        re::app(
-            re::not(re::character('a')),
-            re::character('b')),
+        re::app(re::not(re::character('a')), re::character('b')),
         re::new("^[^a]b$")
     );
 }
@@ -586,27 +591,42 @@ fn test_regex_negative_char_class2() {
             re::app(
                 re::app(
                     re::dotstar(),
-                    re::not(
-                        re::alt(
-                            re::character('a'),
-                            re::character('b'),
-                        )
-                    )
+                    re::not(re::alt(re::character('a'), re::character('b'),))
                 ),
-                re::character('c')),
-            re::dotstar()),
+                re::character('c')
+            ),
+            re::dotstar()
+        ),
         re::new("[^ab]c")
     );
 }
 
 #[test]
 fn test_regex_dot() {
+    assert_eq!(re::app(re::dot(), re::character('a'),), re::new("^.a$"));
+}
+
+#[test]
+fn test_regex_negative_char_class_range() {
+    //unsafe { backtrace_on_stack_overflow::enable() };
     assert_eq!(
         re::app(
-            re::dot(),
-            re::character('a'),
+            re::app(
+                re::app(
+                    re::dotstar(),
+                    re::not(re::alt(
+                        re::character('a'),
+                        re::alt(
+                            re::character('b'),
+                            re::alt(re::character('c'), re::character('d'),)
+                        )
+                    ))
+                ),
+                re::character('e')
+            ),
+            re::dotstar()
         ),
-        re::new("^.a$")
+        re::new("[^a-d]e")
     );
 }
 //add test for :space:, alphanum, etc
