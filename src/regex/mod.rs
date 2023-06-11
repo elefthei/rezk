@@ -238,18 +238,15 @@ impl Regex {
             (RegexF::App(ref a, ref x), RegexF::App(ref b, ref y))
                 if a == b && Regex::partial_le(x, y) == Some(true) =>
                 Some(true),
-            (_, _) if Regex::partial_le(b, a) == Some(true) =>
-                Some(false),
-            (_, _) if Regex::partial_le(b, a) == Some(false) =>
-                Some(true),
             (_, _) => None,
         }
     }
 
     pub fn app(a: Regex, b: Regex) -> Regex {
         match (&*a.0, &*b.0) {
-            // Right-associative [app]
-            (RegexF::App(x, y), _) => Regex::app(x.clone(), Regex::app(y.clone(), b)),
+            // Left-associative [app]
+            (_, RegexF::App(x, y)) =>
+                Regex::app(Regex::app(a, x.clone()), y.clone()),
             // Monoid on Nil
             (_, RegexF::Nil) => a,
             (RegexF::Nil, _) => b,
@@ -258,9 +255,8 @@ impl Regex {
             // Range & star index math
             (RegexF::Range(a, i, j), _) if a == &b => Regex::range(a, i + 1, j + 1),
             (_, RegexF::Range(b, i, j)) if &a == b => Regex::range(b, i + 1, j + 1),
-            (RegexF::Range(a, i1, j1), RegexF::Range(b, i2, j2)) if a == b => {
-                Regex::range(a, i1 + i2, j1 + j2)
-            }
+            (RegexF::Range(a, i1, j1), RegexF::Range(b, i2, j2)) if a == b =>
+                Regex::range(a, i1 + i2, j1 + j2),
             (RegexF::Star(x), RegexF::Star(y)) if Regex::partial_le(x, y)==Some(true) => b,
             (RegexF::Star(x), RegexF::Star(y)) if Regex::partial_le(x, y)==Some(false) => a,
             (_, _) => Regex(G.mk(RegexF::App(a, b))),
@@ -416,24 +412,11 @@ impl Regex {
                     None
                 }
             }
-            // (r | r')
-            RegexF::Alt(ref a, ref b) => {
-                let (pa, rema) = a.extract_skip(ab)?;
-                let (pb, remb) = b.extract_skip(ab)?;
-                if rema.is_nil() && remb.is_nil() {
-                    Some((pa.alt(&pb), Regex::nil()))
-                } else {
-                    None
-                }
-            }
             // r1r2
             RegexF::App(ref a, ref b) => {
                 let (pa, rema) = a.extract_skip(ab)?;
-                match b.extract_skip(ab) {
-                    Some((pb, remb)) => Some((pa.app(&pb), Regex::app(rema, remb))),
-                    None => Some((pa, Regex::app(rema, b.clone()))),
-                }
-            }
+                Some((pa, Regex::app(rema, b.clone())))
+            },
             _ => None,
         }
     }
