@@ -1,4 +1,3 @@
-use crate::backend::costs::{JBatching, JCommit};
 use crate::backend::nova::int_to_ff;
 use crate::backend::r1cs_helper::verifier_mle_eval;
 use circ::cfg::cfg;
@@ -131,7 +130,6 @@ pub fn final_clear_checks(
     doc_len: usize,
     final_q: Option<Vec<<G1 as Group>::Scalar>>,
     final_v: Option<<G1 as Group>::Scalar>,
-    final_hash: Option<<G1 as Group>::Scalar>,
     final_doc_q: Option<Vec<<G1 as Group>::Scalar>>,
     final_doc_v: Option<<G1 as Group>::Scalar>,
 ) {

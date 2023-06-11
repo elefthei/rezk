@@ -52,8 +52,8 @@ pub struct R1CS<'a, F: PrimeField, C: Clone> {
         usize,
         usize,
     )>,
-    is_match: bool,
-    pub foldings: Vec<Folding>,
+    pub chunks: Vec<ChunkITE>,
+    pub skips: Vec<SkipITE>,
     //pub substring: (usize, usize), // todo getters
     pub pc: PoseidonConstants<F, typenum::U4>,
 }
@@ -61,14 +61,13 @@ pub struct R1CS<'a, F: PrimeField, C: Clone> {
 impl<'a, F: PrimeField> R1CS<'a, F, char> {
     pub fn new(
         safa: &'a SAFA<char>,
+        num_ab: FxHashMap<Option<char>, usize>,
         doc: &Vec<char>,
+        usize_doc: Vec<usize>,
         batch_size: usize,
         reef_commit: ReefCommitment<F>,
         pcs: PoseidonConstants<F, typenum::U4>,
     ) -> Self {
-        //let nfa_match = nfa.is_match(doc);
-        //let is_match = nfa_match.is_some();
-
         //let opt_batch_size;
         let cost: usize;
         /*  if batch_size > 0 {
@@ -110,7 +109,6 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
         // TODO timing here
 
         let moves = safa.solve(&doc).unwrap();
-        let is_match = true;
 
         let mut sel_batch_size = 1;
         for m in moves.clone() {
@@ -159,15 +157,6 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                 }
         */
 
-        // character conversions
-        let mut num_ab: FxHashMap<Option<char>, usize> = FxHashMap::default();
-        let mut i = 0;
-        for c in safa.ab.clone() {
-            num_ab.insert(Some(c), i);
-            i += 1;
-        }
-        num_ab.insert(None, i); // EPSILON
-
         // generate T
         let num_states = safa.g.node_count();
         let num_chars = safa.ab.len();
@@ -183,7 +172,8 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
         println!("SOLVE {:#?}", safa.solve(&doc));
         //        println!("DOC {:#?}", doc.clone());
 
-        let mut foldings = Vec::new();
+        let mut chunks = Vec::new();
+        let mut skips = Vec::new();
 
         let mut dfs = Dfs::new(&safa.g, safa.get_init());
 
@@ -202,7 +192,7 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                             let stack = if (i == and_edges.len() - 1)
                                 && safa.g.neighbors(and_edges[i].target()).count() == 0
                             {
-                                // no children (i hope your die i hope we both die)
+                                // no children (i hope you die i hope we both die)
                                 StackInfo::Pop
                             } else if safa.g.neighbors(and_edges[i].target()).count() == 0 {
                                 StackInfo::Level
@@ -210,13 +200,12 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                                 StackInfo::Push
                             };
                             // AND
-                            add_folding(
-                                &mut foldings,
-                                vec![sink.index()],
-                                CursorInfo::PlusChoice(vec![0]),
-                                state.index(),
-                                stack,
-                            );
+                            chunks.push(ChunkITE {
+                                start_states: vec![sink.index()],
+                                from: state.index(),
+                                s_info: stack,
+                                must_accept: false,
+                            });
                         }
 
                         _ => {
@@ -240,13 +229,12 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                     }
                 }
                 // OR
-                add_folding(
-                    &mut foldings,
+                chunks.push(ChunkITE {
                     start_states,
-                    CursorInfo::PlusChoice(vec![0]),
-                    state.index(),
-                    StackInfo::Push,
-                );
+                    from: state.index(),
+                    s_info: StackInfo::Push,
+                    must_accept: false,
+                });
             } else {
                 // other state
                 let in_state = state.index();
@@ -271,31 +259,25 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                             }
                         }
                         Either(Err(Skip::Offset(u))) => {
-                            add_folding(
-                                &mut foldings,
-                                vec![out_state],
-                                CursorInfo::PlusChoice(vec![u]),
-                                state.index(),
-                                StackInfo::Push,
-                            );
+                            skips.push(SkipITE {
+                                source: in_state,
+                                target: out_state,
+                                c_info: CursorInfo::PlusChoice(vec![u]),
+                            });
                         }
                         Either(Err(Skip::Choice(us))) => {
-                            add_folding(
-                                &mut foldings,
-                                vec![out_state],
-                                CursorInfo::PlusChoice(us.iter().map(|x| *x).collect()),
-                                state.index(),
-                                StackInfo::Push,
-                            );
+                            skips.push(SkipITE {
+                                source: in_state,
+                                target: out_state,
+                                c_info: CursorInfo::PlusChoice(us.iter().map(|x| *x).collect()),
+                            });
                         }
                         Either(Err(Skip::Star)) => {
-                            add_folding(
-                                &mut foldings,
-                                vec![out_state],
-                                CursorInfo::Geq,
-                                state.index(),
-                                StackInfo::Push,
-                            );
+                            skips.push(SkipITE {
+                                source: in_state,
+                                target: out_state,
+                                c_info: CursorInfo::Geq,
+                            });
                         }
                         Either(Ok(ch)) => {
                             let c = num_ab[&Some(ch)];
@@ -313,12 +295,12 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
             }
 
             if safa.accepting.contains(&state) {
-                let len = foldings.len() - 1;
-                foldings[len].must_accept = true;
+                let len = chunks.len() - 1;
+                chunks[len].must_accept = true;
             }
         }
 
-        println!("FOLDINGS {:#?}", foldings);
+        println!("FOLD INFO {:#?} {:#?}", chunks, skips);
 
         // need to round out table size
         let base: usize = 2;
@@ -332,96 +314,27 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
         }
 
         // generate usize doc
-        // doc to usizes - can I use this elsewhere too? TODO
-        let mut usize_doc = vec![];
         let mut int_doc = vec![];
-        for c in doc.clone().into_iter() {
-            let u = num_ab[&Some(c)];
-            usize_doc.push(u);
+        for u in usize_doc.clone().into_iter() {
             int_doc.push(Integer::from(u));
         }
-        println!("udoc {:#?}", usize_doc.clone());
-
-        // EPSILON
-        let u = num_ab[&None];
-        usize_doc.push(u);
-        int_doc.push(Integer::from(u));
 
         Self {
             safa,
             num_ab,
             table, // TODO fix else
-            //delta,    // TODO GET RID
             reef_commit,
             assertions: Vec::new(),
             pub_inputs: Vec::new(),
             batch_size: sel_batch_size,
-            //cdoc: batch_doc, //chars
             udoc: usize_doc, //usizes
             idoc: int_doc,   // big ints
             doc_extend: epsilon_to_add,
             moves,
-            is_match,
-            foldings,
-            //substring,
+            chunks,
+            skips,
             pc: pcs,
         }
-    }
-
-    // IN THE CLEAR
-    pub fn prover_calc_hash(
-        &self,
-        start_hash_or_blind: F,
-        blind: bool,
-        start: usize,
-        num_iters: usize,
-    ) -> F {
-        let mut next_hash;
-
-        if start == 0 && blind {
-            // H_0 = Hash(0, r, 0)
-            let mut sponge = Sponge::new_with_constants(&self.pc, Mode::Simplex);
-            let acc = &mut ();
-
-            let parameter = IOPattern(vec![SpongeOp::Absorb(2), SpongeOp::Squeeze(1)]);
-            sponge.start(parameter, None, acc);
-
-            SpongeAPI::absorb(&mut sponge, 2, &[start_hash_or_blind, F::from(0)], acc);
-            next_hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
-            sponge.finish(acc).unwrap();
-        } else {
-            next_hash = vec![start_hash_or_blind];
-        }
-
-        let parameter = IOPattern(vec![SpongeOp::Absorb(3), SpongeOp::Squeeze(1)]);
-        for b in 0..num_iters {
-            //self.batch_size {
-            let access_at = start + b;
-            if access_at < self.udoc.len() {
-                // this is going to be wrong - TODO
-                // else nothing
-
-                // expected poseidon
-                let mut sponge = Sponge::new_with_constants(&self.pc, Mode::Simplex);
-                let acc = &mut ();
-
-                sponge.start(parameter.clone(), None, acc);
-                SpongeAPI::absorb(
-                    &mut sponge,
-                    3,
-                    &[
-                        next_hash[0],
-                        F::from(self.udoc[access_at].clone() as u64),
-                        F::from((access_at) as u64),
-                    ],
-                    acc,
-                );
-                next_hash = SpongeAPI::squeeze(&mut sponge, 1, acc);
-                sponge.finish(acc).unwrap(); // assert expected hash finished correctly
-            }
-        }
-
-        next_hash[0]
     }
 
     // PROVER
@@ -429,13 +342,9 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
     pub fn prover_accepting_state(&self, state: usize) -> u64 {
         let mut out = false;
 
-        if self.is_match {
-            // proof of membership
-            for a in self.safa.accepting.iter() {
-                out = out || a.index() == state;
-            }
-        } else {
-            unimplemented!();
+        // proof of membership
+        for a in self.safa.accepting.iter() {
+            out = out || a.index() == state;
         }
 
         //println!("ACCEPTING? {:#?}", out);
@@ -449,86 +358,58 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
 
     // CIRCUIT
 
-    fn foldings_circ(&mut self) {
-        if self.foldings.len() == 0 {
-            panic!("zero foldings");
-        } else if self.foldings[0].from != 0 && !self.foldings[0].start_states.contains(&1) {
-            panic!("foldings don't start at beginning");
+    fn chunks_circ(&mut self) {
+        if self.chunks.len() == 0 {
+            panic!("zero chunks");
+        } else if self.chunks[0].from != 0 && !self.chunks[0].start_states.contains(&1) {
+            panic!("chunks don't start at beginning");
         }
 
-        let fold_p1 = term(
+        // condition to advance chunk count
+        let chunk_pp = term(
             Op::Eq,
             vec![
-                new_var(format!("fold_num")),
+                new_var(format!("chunk_num")),
                 term(
                     Op::PfNaryOp(PfNaryOp::Add),
-                    vec![new_var(format!("fold_num")), new_const(1)],
+                    vec![new_var(format!("chunk_num")), new_const(1)],
                 ),
             ],
         );
 
-        let mut ite_term = new_bool_const(false); // final else
         let mut stack_cursor = 0;
-        for f in &self.foldings {
+
+        let ite_term = new_bool_const(true);
+
+        for f in &self.chunks {
+            let mut chunk_req = vec![];
+
             // cond
-            let cond = match f.start_states.len() {
+            let start = match f.start_states.len() {
                 0 => panic!("no start states for folding"),
                 1 => term(
                     Op::Eq,
-                    vec![new_var(format!("state_0")), new_const(f.start_states[0])],
+                    vec![new_var(format!("state_z")), new_const(f.start_states[0])],
                 ),
                 _ => term(
                     Op::BoolNaryOp(BoolNaryOp::Or),
                     f.start_states
                         .iter()
-                        .map(|s| term(Op::Eq, vec![new_var(format!("state_0")), new_const(*s)]))
+                        .map(|s| term(Op::Eq, vec![new_var(format!("state_z")), new_const(*s)]))
                         .collect(),
                 ),
             };
+            chunk_req.push(start);
 
-            // cursor
-            let cursor_cnstr = match &f.c_info {
-                CursorInfo::PlusChoice(v) => match v.len() {
-                    0 => panic!("no choices for cusor info"),
-                    1 => term(
-                        Op::Eq,
-                        vec![
-                            new_var(format!("i_0")),
-                            term(
-                                Op::PfNaryOp(PfNaryOp::Add),
-                                vec![new_var(format!("i_z_cursor")), new_const(v[0])],
-                            ),
-                        ],
-                    ),
-                    _ => term(
-                        Op::BoolNaryOp(BoolNaryOp::Or),
-                        v.into_iter()
-                            .map(|vi| {
-                                term(
-                                    Op::Eq,
-                                    vec![
-                                        new_var(format!("i_0")),
-                                        term(
-                                            Op::PfNaryOp(PfNaryOp::Add),
-                                            vec![new_var(format!("i_z_cursor")), new_const(*vi)],
-                                        ),
-                                    ],
-                                )
-                            })
-                            .collect(),
-                    ),
-                },
-                CursorInfo::Geq => term(
-                    Op::IntBinPred(IntBinPred::Ge),
-                    vec![new_var(format!("i_0")), new_var(format!("i_z_cursor"))],
-                ),
-            };
+            if f.must_accept {
+                let acc = term(Op::Eq, vec![new_var(format!("accepting")), new_const(1)]);
+                chunk_req.push(acc);
+            }
 
             let stack_cnstr = match f.s_info {
                 StackInfo::Push => {
                     let mut stack = vec![];
-                    for i in 0..self.foldings.len() {
-                        // TODO self.folding_depth {
+                    for i in 0..self.chunk_depth {
                         if i == stack_cursor {
                             stack.push(term(
                                 Op::Eq,
@@ -557,8 +438,7 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                 StackInfo::Pop => {
                     // we don't care about overwriting, we just move the cursor
                     let mut stack = vec![];
-                    for i in 0..self.foldings.len() {
-                        // TODO self.folding_depth {
+                    for i in 0..self.chunk_depth {
                         stack.push(term(
                             Op::Eq,
                             vec![
@@ -575,8 +455,7 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
 
                 StackInfo::Level => {
                     let mut stack = vec![];
-                    for i in 0..self.foldings.len() {
-                        // TODO self.folding_depth {
+                    for i in 0..self.self.chunk_depth {
                         stack.push(term(
                             Op::Eq,
                             vec![
@@ -589,6 +468,8 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                     term(Op::BoolNaryOp(BoolNaryOp::And), stack)
                 }
             };
+            let mut chunk_stmt = vec![];
+            chunk_stmt.push(stack_cnstr);
 
             let z_cursor = term(
                 Op::Eq,
@@ -597,19 +478,96 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                     new_var(format!("i_z_{}", stack_cursor)),
                 ],
             );
+            chunk_stmt.push(z_cursor);
 
-            let mut req_vec = vec![fold_p1.clone(), cursor_cnstr, stack_cnstr, z_cursor];
-            if f.must_accept {
-                let acc = term(Op::Eq, vec![new_var(format!("accepting")), new_const(1)]);
-                req_vec.push(acc);
-            }
+            let chunk_conds = term(Op::BoolNaryOp(BoolNaryOp::And), chunk_req);
+            let chunk_actions = term(Op::BoolNaryOp(BoolNaryOp::And), chunk_stmt);
 
-            let req = term(Op::BoolNaryOp(BoolNaryOp::And), req_vec);
-
-            ite_term = term(Op::Ite, vec![cond, req, ite_term]);
+            ite_term = term(Op::Ite, vec![chunk_conds, chunk_actions, ite_term]);
 
             assert!(stack_cursor >= 0);
         }
+
+        self.assertions.push(ite_term);
+
+        self.pub_inputs.push(new_var(format!("chunk_num")));
+        self.pub_inputs.push(new_var(format!("i_z_cursor")));
+        self.pub_inputs.push(new_var(format!("state_z")));
+        for i in 0..self.chunk_depth {
+            self.pub_inputs.push(new_var(format!("i_z_{}", i)));
+            self.pub_inputs.push(new_var(format!("i_z_next_{}", i)));
+        }
+
+        assert!(stack_cursor >= 0);
+    }
+
+    fn skip_circ(&mut self) {
+        let ite_term = new_bool_const(true);
+        for f in &self.skips {
+            let skip_conds = term(
+                Op::BoolNaryOp(BoolNaryOp::And),
+                vec![
+                    term(
+                        Op::Eq,
+                        vec![
+                            new_const(f.source),
+                            new_var(format!("state_{}", self.batch_size)),
+                        ],
+                    ),
+                    term(
+                        Op::Eq,
+                        vec![
+                            new_const(f.target),
+                            new_var(format!("state_{}", self.batch_size + 1)),
+                        ],
+                    ),
+                ],
+            );
+
+            let skip_actions = match &f.c_info {
+                CursorInfo::PlusChoice(v) => match v.len() {
+                    0 => panic!("no choices for cursor info"),
+                    1 => term(
+                        Op::Eq,
+                        vec![
+                            new_var(format!("i_{}", self.batch_size)),
+                            term(
+                                Op::PfNaryOp(PfNaryOp::Add),
+                                vec![new_var(format!("i_z_cursor")), new_const(v[0])],
+                            ),
+                        ],
+                    ),
+                    _ => term(
+                        Op::BoolNaryOp(BoolNaryOp::Or),
+                        v.into_iter()
+                            .map(|vi| {
+                                term(
+                                    Op::Eq,
+                                    vec![
+                                        new_var(format!("i_{}", self.batch_size)),
+                                        term(
+                                            Op::PfNaryOp(PfNaryOp::Add),
+                                            vec![new_var(format!("i_z_cursor")), new_const(*vi)],
+                                        ),
+                                    ],
+                                )
+                            })
+                            .collect(),
+                    ),
+                },
+                CursorInfo::Geq => term(
+                    Op::IntBinPred(IntBinPred::Ge),
+                    vec![
+                        new_var(format!("i_{}", self.batch_size)),
+                        new_var(format!("i_z_cursor")),
+                    ],
+                ),
+            };
+
+            ite_term = term(Op::Ite, vec![skip_conds, skip_actions, ite_term]);
+        }
+        self.assertions.push(ite_term);
+        self.pub_inputs.push(format!("i_{}", self.batch_size + 1)); // TODO
     }
 
     // check if we need vs as vars
@@ -665,17 +623,11 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
         //    let non_final_states = self.nfa.non_accepting();
         let mut vanish_on = vec![];
 
-        if self.is_match {
-            // proof of membership
-            for xi in final_states.into_iter() {
-                vanish_on.push(Integer::from(xi.index()));
-            }
-        } else {
-            unimplemented!();
-            /*for xi in non_final_states.into_iter() {
-                vanish_on.push(Integer::from(xi));
-            }*/
+        // proof of membership
+        for xi in final_states.into_iter() {
+            vanish_on.push(Integer::from(xi.index()));
         }
+
         vanishing_poly =
             poly_eval_circuit(vanish_on, new_var(format!("state_{}", self.batch_size)));
 
@@ -1080,6 +1032,7 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
     pub fn gen_wit_i(
         //_nlookup(
         &self,
+        fold_num: usize,
         move_num: (usize, usize), // iterator
         batch_num: usize,
         current_state: usize,
@@ -1116,17 +1069,13 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
             //println!("is EPSILON? {:#?}", is_epsilon);
             if is_epsilon {
                 //next_state = self.moves
-                next_state = self.delta[&(state_i, self.num_ab[&None])];
+                next_state = self.moves.next();
+
+                //delta[&(state_i, self.num_ab[&None])];
                 char_num = self.num_ab[&None]; // TODO
             } else {
-                next_state = self.delta[&(state_i, self.udoc[access_at])];
+                //next_state = self.delta[&(state_i, self.udoc[access_at])];
                 char_num = self.udoc[access_at];
-                println!(
-                    "search for ({:#?},{:#?}) in delta",
-                    state_i,
-                    self.udoc[access_at].clone(),
-                    //self.delta.clone()
-                );
             }
 
             //println!("Char {:#?}", char_num);
@@ -1358,7 +1307,7 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
         let mut query: Vec<F> = match id {
             "nl" => vec![],
             "nldoc" => match &self.reef_commit {
-                Some(ReefCommitment::Nlookup(dcs)) => vec![dcs.commit_doc_hash],
+                ReefCommitment::Nlookup(dcs) => vec![dcs.commit_doc_hash],
                 _ => panic!("commitment not found"),
             },
             _ => panic!("weird tag"),
@@ -1660,131 +1609,122 @@ mod tests {
         batch_sizes: Vec<usize>,
         expected_match: bool,
     ) {
+        if !expected_match {
+            unimplemented!();
+        }
+
         let r = Regex::new(&rstr);
         let safa = SAFA::new(&ab[..], &r);
 
         let chars: Vec<char> = doc.chars().collect(); //map(|c| c.to_string()).collect();
 
         for s in batch_sizes {
-            for c in vec![JCommit::HashChain, JCommit::Nlookup] {
-                for b in vec![JBatching::NaivePolys, JBatching::Nlookup] {
-                    let sc = Sponge::<<G1 as Group>::Scalar, typenum::U4>::api_constants(
-                        Strength::Standard,
-                    );
+            let sc =
+                Sponge::<<G1 as Group>::Scalar, typenum::U4>::api_constants(Strength::Standard);
 
-                    let reef_commit = gen_commitment(r1cs_converter.udoc.clone(), &sc);
+            let reef_commit = gen_commitment(r1cs_converter.udoc.clone(), &sc);
 
-                    let mut r1cs_converter = R1CS::new(&safa, &chars, s, reef_commit, sc.clone());
+            let mut r1cs_converter = R1CS::new(&safa, &chars, s, reef_commit, sc.clone());
 
-                    assert_eq!(expected_match, r1cs_converter.is_match);
+            let mut running_q = None;
+            let mut running_v = None;
+            let mut doc_running_q = None;
+            let mut doc_running_v = None;
+            let mut doc_idx = None;
 
-                    let mut running_q = None;
-                    let mut running_v = None;
-                    let mut doc_running_q = None;
-                    let mut doc_running_v = None;
-                    let mut doc_idx = None;
+            let (pd, _vd) = r1cs_converter.to_circuit();
 
-                    let (pd, _vd) = r1cs_converter.to_circuit();
+            let mut values;
+            let mut next_state;
 
-                    let mut values;
-                    let mut next_state;
+            let mut _start_epsilons;
+            let moves: Vec<_> = r1cs_converter.moves.clone().unwrap().into_iter().collect();
+            let num_steps = moves.len();
 
-                    let mut _start_epsilons;
-                    let moves: Vec<_> = r1cs_converter.moves.clone().unwrap().into_iter().collect();
-                    let num_steps = moves.len();
+            let mut current_state = moves[0].0.index();
 
-                    let mut current_state = moves[0].0.index();
+            for i in 0..num_steps {
+                let move_i = (moves[i].3, moves[i].4);
 
-                    for i in 0..num_steps {
-                        let move_i = (moves[i].3, moves[i].4);
+                (
+                    values,
+                    next_state,
+                    running_q,
+                    running_v,
+                    doc_running_q,
+                    doc_running_v,
+                    _start_epsilons,
+                    doc_idx,
+                ) = r1cs_converter.gen_wit_i(
+                    (0, 0), // TODO
+                    0,      // i, TODO
+                    current_state,
+                    running_q.clone(),
+                    running_v.clone(),
+                    doc_running_q.clone(),
+                    doc_running_v.clone(),
+                    doc_idx,
+                );
 
-                        (
-                            values,
-                            next_state,
-                            running_q,
-                            running_v,
-                            doc_running_q,
-                            doc_running_v,
-                            _start_epsilons,
-                            doc_idx,
-                        ) = r1cs_converter.gen_wit_i(
-                            (0, 0), // TODO
-                            0,      // i, TODO
-                            current_state,
-                            running_q.clone(),
-                            running_v.clone(),
-                            doc_running_q.clone(),
-                            doc_running_v.clone(),
-                            doc_idx,
-                        );
-
-                        pd.check_all(&values);
-                        // for next i+1 round
-                        current_state = next_state;
-                    }
-
-                    let rq = match running_q {
-                        Some(x) => Some(x.into_iter().map(|i| int_to_ff(i)).collect()),
-                        None => None,
-                    };
-                    let rv = match running_v {
-                        Some(x) => Some(int_to_ff(x)),
-                        None => None,
-                    };
-                    let drq = match doc_running_q {
-                        Some(x) => Some(x.into_iter().map(|i| int_to_ff(i)).collect()),
-                        None => None,
-                    };
-                    let drv = match doc_running_v {
-                        Some(x) => Some(int_to_ff(x)),
-                        None => None,
-                    };
-                    //dummy hash check (hashes not generated at this level)
-                    let dummy_hash = match &reef_commit {
-                        ReefCommitment::HashChain(hcs) => Some(hcs.commit),
-                        _ => None,
-                    };
-
-                    final_clear_checks(
-                        reef_commit,
-                        <G1 as Group>::Scalar::from(1), // dummy, not checked
-                        &r1cs_converter.table,
-                        r1cs_converter.udoc.len(),
-                        rq,
-                        rv,
-                        dummy_hash, // final hash not checked
-                        drq,
-                        drv,
-                    );
-
-                    /*
-                    println!(
-                        "cost model: {:#?}",
-                        costs::full_round_cost_model_nohash(
-                            &safa,
-                            r1cs_converter.batch_size,
-                            b.clone(),
-                            nfa.is_match(&chars),
-                            doc.len(),
-                            c,
-                        )
-                    );*/
-                    println!("actual cost: {:#?}", pd.r1cs.constraints.len());
-                    println!("\n\n\n");
-
-                    /*assert!(
-                        pd.r1cs.constraints.len() as usize
-                            == costs::full_round_cost_model_nohash(
-                                &nfa,
-                                r1cs_converter.batch_size,
-                                b.clone(),
-                                nfa.is_match(&chars),
-                                doc.len(),
-                                c
-                            )
-                    );*/
-                }
+                pd.check_all(&values);
+                // for next i+1 round
+                current_state = next_state;
             }
+
+            let rq = match running_q {
+                Some(x) => Some(x.into_iter().map(|i| int_to_ff(i)).collect()),
+                None => None,
+            };
+            let rv = match running_v {
+                Some(x) => Some(int_to_ff(x)),
+                None => None,
+            };
+            let drq = match doc_running_q {
+                Some(x) => Some(x.into_iter().map(|i| int_to_ff(i)).collect()),
+                None => None,
+            };
+            let drv = match doc_running_v {
+                Some(x) => Some(int_to_ff(x)),
+                None => None,
+            };
+
+            final_clear_checks(
+                reef_commit,
+                <G1 as Group>::Scalar::from(1), // dummy, not checked
+                &r1cs_converter.table,
+                r1cs_converter.udoc.len(),
+                rq,
+                rv,
+                drq,
+                drv,
+            );
+
+            /*
+            println!(
+                "cost model: {:#?}",
+                costs::full_round_cost_model_nohash(
+                    &safa,
+                    r1cs_converter.batch_size,
+                    b.clone(),
+                    nfa.is_match(&chars),
+                    doc.len(),
+                    c,
+                )
+            );*/
+            println!("actual cost: {:#?}", pd.r1cs.constraints.len());
+            println!("\n\n\n");
+
+            /*assert!(
+                pd.r1cs.constraints.len() as usize
+                    == costs::full_round_cost_model_nohash(
+                        &nfa,
+                        r1cs_converter.batch_size,
+                        b.clone(),
+                        nfa.is_match(&chars),
+                        doc.len(),
+                        c
+                    )
+            );*/
         }
     }
 

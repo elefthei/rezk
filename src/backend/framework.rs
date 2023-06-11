@@ -16,6 +16,7 @@ use crate::backend::{
 use crate::safa::SAFA;
 use circ::target::r1cs::wit_comp::StagedWitCompEvaluator;
 use circ::target::r1cs::ProverData;
+use fxhash::FxHashMap;
 use generic_array::typenum;
 use neptune::{
     sponge::vanilla::{Sponge, SpongeTrait},
@@ -62,9 +63,30 @@ pub fn run_backend(
         // we do setup here to avoid unsafe passing
         let sc = Sponge::<<G1 as Group>::Scalar, typenum::U4>::api_constants(Strength::Standard);
 
+        // character conversions
+        let mut num_ab: FxHashMap<Option<char>, usize> = FxHashMap::default();
+        let mut i = 0;
+        for c in safa.ab.clone() {
+            num_ab.insert(Some(c), i);
+            i += 1;
+        }
+        num_ab.insert(None, i); // EPSILON
+
+        // generate usize doc
+        let mut usize_doc = vec![];
+        for c in doc.clone().into_iter() {
+            let u = num_ab[&Some(c)];
+            usize_doc.push(u);
+        }
+        println!("udoc {:#?}", usize_doc.clone());
+
+        // EPSILON
+        let u = num_ab[&None];
+        usize_doc.push(u);
+
         #[cfg(feature = "metrics")]
         log::tic(Component::Compiler, "R1CS", "Commitment Generations");
-        let reef_commit = gen_commitment(r1cs_converter.udoc.clone(), &sc);
+        let reef_commit = gen_commitment(usize_doc.clone(), &sc);
 
         #[cfg(feature = "metrics")]
         log::stop(Component::Compiler, "R1CS", "Commitment Generations");
@@ -76,7 +98,15 @@ pub fn run_backend(
             "Optimization Selection, R1CS precomputations",
         );
 
-        let mut r1cs_converter = R1CS::new(&safa, &doc, temp_batch_size, reef_commit, sc.clone());
+        let mut r1cs_converter = R1CS::new(
+            &safa,
+            num_ab,
+            &doc,
+            usize_doc,
+            temp_batch_size,
+            reef_commit,
+            sc.clone(),
+        );
         #[cfg(feature = "metrics")]
         log::stop(
             Component::Compiler,
@@ -217,7 +247,7 @@ fn setup<'a>(
 
     // this variable could be two different types of things, which is potentially dicey, but
     // literally whatever
-    let blind = match r1cs_converter.reef_commit.clone().unwrap() {
+    let blind = match r1cs_converter.reef_commit {
         ReefCommitment::HashChain(hcs) => panic!(),
         ReefCommitment::Nlookup(dcs) => dcs.commit_doc_hash,
     };
@@ -256,8 +286,8 @@ fn solve<'a>(
 
     // this variable could be two different types of things, which is potentially dicey, but
     // literally whatever
-    let blind = match r1cs_converter.reef_commit.clone().unwrap() {
-        ReefCommitment::HashChain(hcs) => hcs.blind,
+    let blind = match r1cs_converter.reef_commit {
+        ReefCommitment::HashChain(hcs) => panic!(),
         ReefCommitment::Nlookup(dcs) => dcs.commit_doc_hash,
     };
     // TODO put this in glue
@@ -538,7 +568,6 @@ fn verify(
         doc_len,
         Some(zn[1..(q_len + 1)].to_vec()),
         Some(zn[q_len + 1]),
-        None,
         Some(zn[(2 + q_len + 1)..(2 + q_len + 1 + qd_len)].to_vec()),
         Some(zn[2 + q_len + 1 + qd_len]),
     );
