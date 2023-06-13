@@ -186,21 +186,10 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                     match and_edges[i].weight().clone() {
                         Either(Err(Skip::Offset(u))) if u == 0 => {
                             let sink = and_edges[i].target();
-                            let stack = if (i == and_edges.len() - 1)
-                                && safa.g.neighbors(and_edges[i].target()).count() == 0
-                            {
-                                // no children (i hope you die i hope we both die)
-                                StackInfo::Pop
-                            } else if safa.g.neighbors(and_edges[i].target()).count() == 0 {
-                                StackInfo::Level
-                            } else {
-                                StackInfo::Push
-                            };
                             // AND
                             chunks.push(ChunkITE {
                                 start_states: vec![sink.index()],
                                 from: state.index(),
-                                s_info: stack,
                                 must_accept: false,
                             });
                         }
@@ -210,28 +199,6 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                         }
                     }
                 }
-            } else if matches!(safa.g[state].get().0.get(), RegexF::Alt(..)) {
-                let mut start_states = vec![];
-                for edge in safa.g.edges(state) {
-                    let sink = edge.target();
-                    match edge.weight().clone() {
-                        Either(Err(Skip::Offset(u))) if u == 0 => {
-                            if sink.index() != state.index() {
-                                start_states.push(sink.index());
-                            }
-                        }
-                        _ => {
-                            panic!("Weird edge coming from Alt node {:#?}", state);
-                        }
-                    }
-                }
-                // OR
-                chunks.push(ChunkITE {
-                    start_states,
-                    from: state.index(),
-                    s_info: StackInfo::Push,
-                    must_accept: false,
-                });
             } else {
                 // other state
                 let in_state = state.index();
@@ -403,83 +370,6 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
                 chunk_req.push(acc);
             }
 
-            let stack_cnstr = match f.s_info {
-                StackInfo::Push => {
-                    let mut stack = vec![];
-                    for i in 0..self.chunk_depth {
-                        if i == stack_cursor {
-                            stack.push(term(
-                                Op::Eq,
-                                vec![
-                                    new_var(format!("i_{}", self.batch_size)), // the final i (last
-                                    // used + 1)
-                                    new_var(format!("i_z_next_{}", i)),
-                                ],
-                            ));
-                        } else {
-                            stack.push(term(
-                                Op::Eq,
-                                vec![
-                                    new_var(format!("i_z_{}", i)),
-                                    new_var(format!("i_z_next_{}", i)),
-                                ],
-                            ));
-                        }
-                    }
-
-                    stack_cursor += 1;
-
-                    term(Op::BoolNaryOp(BoolNaryOp::And), stack)
-                }
-
-                StackInfo::Pop => {
-                    // we don't care about overwriting, we just move the cursor
-                    let mut stack = vec![];
-                    for i in 0..self.chunk_depth {
-                        stack.push(term(
-                            Op::Eq,
-                            vec![
-                                new_var(format!("i_z_{}", i)),
-                                new_var(format!("i_z_next_{}", i)),
-                            ],
-                        ));
-                    }
-
-                    stack_cursor -= 1;
-
-                    term(Op::BoolNaryOp(BoolNaryOp::And), stack)
-                }
-
-                StackInfo::Level => {
-                    let mut stack = vec![];
-                    for i in 0..self.self.chunk_depth {
-                        stack.push(term(
-                            Op::Eq,
-                            vec![
-                                new_var(format!("i_z_{}", i)),
-                                new_var(format!("i_z_next_{}", i)),
-                            ],
-                        ));
-                    }
-
-                    term(Op::BoolNaryOp(BoolNaryOp::And), stack)
-                }
-            };
-            let mut chunk_stmt = vec![];
-            chunk_stmt.push(stack_cnstr);
-
-            let z_cursor = term(
-                Op::Eq,
-                vec![
-                    new_var(format!("i_z_cursor")),
-                    new_var(format!("i_z_{}", stack_cursor)),
-                ],
-            );
-            chunk_stmt.push(z_cursor);
-
-            let chunk_conds = term(Op::BoolNaryOp(BoolNaryOp::And), chunk_req);
-            let chunk_actions = term(Op::BoolNaryOp(BoolNaryOp::And), chunk_stmt);
-
             ite_term = term(Op::Ite, vec![chunk_conds, chunk_actions, ite_term]);
 
             assert!(stack_cursor >= 0);
@@ -488,12 +378,6 @@ impl<'a, F: PrimeField> R1CS<'a, F, char> {
         self.assertions.push(ite_term);
 
         self.pub_inputs.push(new_var(format!("chunk_num")));
-        self.pub_inputs.push(new_var(format!("i_z_cursor")));
-        self.pub_inputs.push(new_var(format!("state_z")));
-        for i in 0..self.chunk_depth {
-            self.pub_inputs.push(new_var(format!("i_z_{}", i)));
-            self.pub_inputs.push(new_var(format!("i_z_next_{}", i)));
-        }
 
         assert!(stack_cursor >= 0);
     }
