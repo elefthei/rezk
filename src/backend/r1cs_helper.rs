@@ -63,17 +63,9 @@ pub enum CursorInfo {
 }
 
 #[derive(Clone, Debug)]
-pub enum StackInfo {
-    Push,
-    Pop,
-    Level, // same level, no push or pop
-}
-
-#[derive(Clone, Debug)]
 pub struct ChunkITE {
     pub start_states: Vec<usize>,
     pub from: usize,
-    pub s_info: StackInfo,
     pub must_accept: bool,
 }
 
