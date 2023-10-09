@@ -75,8 +75,8 @@ fn get_modulus<F: Field + PrimeField>() -> Integer {
 
 #[derive(Clone, Debug)]
 pub enum GlueOpts<F: PrimeField> {
-    Split((Vec<F>, F, Vec<F>, F, F, Vec<F>)), // q, v, doc q, doc v, stack ptr, stack
-    Hybrid((Vec<F>, F, F, Vec<F>)),           // hybrid q, hybrid v, stack ptr, stack
+    Split((Vec<F>, F, Vec<F>, F)), // q, v, doc q, doc v
+    Hybrid((Vec<F>, F)),           // hybrid q, hybrid v
 }
 
 #[derive(Clone)]
@@ -86,10 +86,12 @@ pub struct NFAStepCircuit<F: PrimeField> {
     pub pc: PoseidonConstants<F, typenum::U4>,
     states: Vec<F>,
     cursors: Vec<F>,
+    stack_hashes: Vec<F>,
     glue: Vec<GlueOpts<F>>,
     batch_size: usize,
     max_branches: usize,
     kid_padding: F,
+    pub stack: LinkedList<(F, F, F)>,
     pub commit_blind: F,
     pub claim_blind: F,
 }
@@ -103,15 +105,18 @@ impl<F: PrimeField> NFAStepCircuit<F> {
         pc: PoseidonConstants<F, typenum::U4>,
         states: Vec<F>,
         cursors: Vec<F>,
+        stack_hashes: Vec<F>,
         glue: Vec<GlueOpts<F>>,
         batch_size: usize,
         max_branches: usize,
         kid_padding: F,
+        stack: LinkedList<(F, F, F)>,
         commit_blind: F,
         claim_blind: F,
     ) -> Self {
         assert_eq!(states.len(), 2);
         assert_eq!(cursors.len(), 2);
+        assert_eq!(stack_hashes.len(), 2);
         assert_eq!(glue.len(), 2);
 
         // todo blind, first checking here
@@ -131,10 +136,12 @@ impl<F: PrimeField> NFAStepCircuit<F> {
             pc,
             states,
             cursors,
+            stack_hashes,
             glue,
             batch_size,
             max_branches,
             kid_padding,
+            stack,
             commit_blind,
             claim_blind,
         }
@@ -697,7 +704,7 @@ where {
         &mut self,
         cs: &mut CS,
         tag: &str,
-        stack: Vec<(F, F)>,
+        todo_stack: Vec<(F, F)>,
         in_hash: AllocatedNum<F>,
         out_hash: F,
         push_var: &Option<AllocatedNum<F>>,
@@ -714,10 +721,10 @@ where {
 
         let mut push_hash = in_hash.clone();
 
-        assert_eq!(stack.len(), self.max_branches);
+        assert_eq!(todo_stack.len(), self.max_branches);
 
         let mut i = 0;
-        for (kid, cursor) in stack {
+        for (kid, cursor) in todo_stack {
             let alloc_kid =
                 AllocatedNum::alloc(cs.namespace(|| format!("alloc_kid {}", i)), || Ok(kid))?;
             let kid_padding =
@@ -742,41 +749,56 @@ where {
                 push_hash,
                 &format!("padding or not"),
             )?;
+
+            if not_padding.get_value().unwrap() == F::one() {
+                self.stack
+                    .push_front((hashed.get_value().unwrap(), kid, cursor));
+            }
+
             i += 1;
         }
 
         let done_pushing =
             self.select(cs, push_cond, push_hash, in_hash, &format!("push or not"))?;
 
-        let (stack_preimage, kid, cursor) = self.stack.pop_front().unwrap();
+        let (stack_preimage, kid, cursor) = if pop_cond.get_value().unwrap() == F::one() {
+            self.stack.pop_front().unwrap()
+        } else {
+            (F::zero(), F::zero(), F::zero())
+        };
+
+        let alloc_preimage = AllocatedNum::alloc(
+            cs.namespace(|| format!("alloc_stack_preimage {}", i)),
+            || Ok(stack_preimage),
+        )?;
+        let alloc_kid =
+            AllocatedNum::alloc(cs.namespace(|| format!("alloc_pop_kid {}", i)), || Ok(kid))?;
+        let alloc_popped_cursor = AllocatedNum::alloc(
+            cs.namespace(|| format!("alloc_popped_cursor {}", i)),
+            || Ok(cursor),
+        )?;
 
         let hashed = self.stack_hash_circuit(
             cs,
-            &stack_preimage,
-            &kid,
-            &cursor,
+            &alloc_preimage,
+            &alloc_kid,
+            &alloc_popped_cursor,
             &format!("pop hash {}", i),
         )?;
 
+        let pop_out = self.select(cs, pop_cond, hashed, done_pushing, &format!("pop or not"))?;
+
         cs.enforce(
             || format!("eq {}", tag),
-            |z| z + hashed.get_variable(),
+            |z| z + pop_out.get_variable(),
             |z| z + CS::one(),
             |z| z + done_pushing.get_variable(),
         );
 
-        let cursor_stack;
-        if pop_cond.get_value().unwrap() == F::one() {
-            cursor_stack = cursor;
-        } else {
-            cursor_stack =
-                AllocatedNum::alloc(cs.namespace(|| format!(" {}", i)), || Ok(F::zero()))?;
-        }
-
         let done_popping = self.select(
             cs,
             pop_cond,
-            stack_preimage,
+            alloc_preimage,
             done_pushing,
             &format!("pop or not"),
         )?;
@@ -784,7 +806,7 @@ where {
         let cursor_0 = self.select(
             cs,
             pop_cond,
-            cursor_stack,
+            alloc_popped_cursor,
             cursor_in,
             &format!("cursor pop or not"),
         )?;
@@ -806,17 +828,15 @@ where
 {
     fn arity(&self) -> usize {
         // [state, optional<q,v for eval claim>, optional<q,"v"(hash), for doc claim>,
-        // optional<q, "v"(hash) for hybrid claim>, stack_ptr, <stack>]
+        // optional<q, "v"(hash) for hybrid claim>, cursor, stack_hash]
 
-        let mut arity = 2;
+        let mut arity = 3;
         match &self.glue[0] {
-            GlueOpts::Split((q, _, dq, _, _, stack)) => {
+            GlueOpts::Split((q, _, dq, _)) => {
                 arity += q.len() + 1 + dq.len() + 1;
-                arity += stack.len() + 1;
             }
-            GlueOpts::Hybrid((hq, _, _, stack)) => {
+            GlueOpts::Hybrid((hq, _)) => {
                 arity += hq.len() + 1;
-                arity += stack.len() + 1;
             }
         }
         arity
@@ -827,7 +847,6 @@ where
         assert_eq!(z.len(), self.arity());
 
         assert_eq!(z[0], self.states[0]); // "current state"
-                                          //assert_eq!(z[1], self.chars[0]);
 
         let mut i = 1;
         match &self.glue[0] {
@@ -844,13 +863,6 @@ where
                 }
                 assert_eq!(z[i], *dv);
                 i += 1;
-
-                assert_eq!(z[i], *sp);
-                i += 1;
-                for si in stack.clone() {
-                    assert_eq!(z[i], si);
-                    i += 1;
-                }
             }
             GlueOpts::Hybrid((hq, hv, sp, stack)) => {
                 for qi in hq.clone() {
@@ -859,35 +871,29 @@ where
                 }
                 assert_eq!(z[i], *hv);
                 i += 1;
-                assert_eq!(z[i], *sp);
-                i += 1;
-                for si in stack.clone() {
-                    assert_eq!(z[i], si);
-                    i += 1;
-                }
             }
         }
+        assert_eq!(z[i], self.stack_hashes[0]);
+        i += 1;
         assert_eq!(z[i], self.cursors[0]);
+        i += 1;
 
         let mut out = vec![
             self.states[1], // "next state"
         ];
         match &self.glue[1] {
-            GlueOpts::Split((q, v, dq, dv, sp, stack)) => {
+            GlueOpts::Split((q, v, dq, dv)) => {
                 out.extend(q.clone());
                 out.push(*v);
                 out.extend(dq.clone());
                 out.push(*dv);
-                out.push(*sp);
-                out.extend(stack.clone());
             }
-            GlueOpts::Hybrid((hq, hv, sp, stack)) => {
+            GlueOpts::Hybrid((hq, hv)) => {
                 out.extend(hq.clone());
                 out.push(*hv);
-                out.push(*sp);
-                out.extend(stack.clone());
             }
         }
+        out.push(self.stack_hashes[1]);
         out.push(self.cursors[1]);
         out
     }

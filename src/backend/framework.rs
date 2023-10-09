@@ -32,6 +32,7 @@ use nova_snark::{
 };
 use rand::rngs::OsRng;
 use rug::Integer;
+use std::collections::LinkedList;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -207,8 +208,7 @@ fn setup<'a>(
     let stack_len = r1cs_converter.max_stack;
 
     // use "empty" (witness-less) circuit to generate nova F
-    let stack_ptr = <G1 as Group>::Scalar::zero();
-    let stack = vec![<G1 as Group>::Scalar::zero(); stack_len];
+    let running_stack_hash = <G1 as Group>::Scalar::zero();
 
     let empty_glue;
     if r1cs_converter.hybrid_len.is_none() {
@@ -221,15 +221,8 @@ fn setup<'a>(
         let doc_v = <G1 as Group>::Scalar::zero();
 
         empty_glue = vec![
-            GlueOpts::Split((
-                q.clone(),
-                v.clone(),
-                doc_q.clone(),
-                doc_v.clone(),
-                stack_ptr.clone(),
-                stack.clone(),
-            )),
-            GlueOpts::Split((q, v, doc_q, doc_v, stack_ptr, stack)),
+            GlueOpts::Split((q.clone(), v.clone(), doc_q.clone(), doc_v.clone())),
+            GlueOpts::Split((q, v, doc_q, doc_v)),
         ];
         z.append(&mut vec![<G1 as Group>::Scalar::zero(); q_len]);
         z.push(int_to_ff(r1cs_converter.table[0].clone()));
@@ -257,15 +250,8 @@ fn setup<'a>(
 
         z.push(d);
     }
-
-    z.push(<G1 as Group>::Scalar::from(0 as u64));
-    z.append(&mut vec![
-        <G1 as Group>::Scalar::from(
-            r1cs_converter.kid_padding as u64
-        );
-        stack_len
-    ]);
-    z.push(<G1 as Group>::Scalar::from(0 as u64));
+    z.push(<G1 as Group>::Scalar::from(0 as u64)); // running hash
+    z.push(<G1 as Group>::Scalar::from(0 as u64)); // cursor
 
     // println!("Z LEN {:#?}", z.len());
 
@@ -279,6 +265,7 @@ fn setup<'a>(
         r1cs_converter.batch_size,
         r1cs_converter.max_branches,
         <G1 as Group>::Scalar::from(r1cs_converter.kid_padding as u64),
+        LinkedList::new(),
         <G1 as Group>::Scalar::zero(),
         <G1 as Group>::Scalar::zero(),
     );
@@ -356,10 +343,14 @@ fn solve<'a>(
 
     let mut prev_cursor = 0;
     let mut next_cursor;
-    let mut stack_ptr_0 = 0;
-    let mut stack_ptr_popped;
     let mut stack_in = vec![r1cs_converter.kid_padding; r1cs_converter.max_stack];
     let mut stack_out;
+    let mut running_stack_hash = <G1 as Group>::Scalar::zero();
+    let mut nova_stack_data: LinkedList<(
+        <G1 as Group>::Scalar,
+        <G1 as Group>::Scalar,
+        <G1 as Group>::Scalar,
+    )>::new();
 
     let mut current_state = r1cs_converter.safa.get_init().index();
     // TODO don't recalc :(
@@ -405,7 +396,7 @@ fn solve<'a>(
             hybrid_running_v.clone(),
             prev_cursor.clone(),
         );
-        stack_ptr_popped = r1cs_converter.stack_ptr;
+
         stack_out = vec![];
         for (cur, kid) in &r1cs_converter.stack {
             stack_out.push(cur * r1cs_converter.num_states + kid);
@@ -414,19 +405,6 @@ fn solve<'a>(
         // TODO
         // just for debugging :)
         circ_data.check_all(&wits);
-
-        let sp_0 = <G1 as Group>::Scalar::from(stack_ptr_0 as u64);
-        let spp = <G1 as Group>::Scalar::from(stack_ptr_popped as u64);
-        let stk_in = stack_in
-            .clone()
-            .into_iter()
-            .map(|x| <G1 as Group>::Scalar::from(x as u64))
-            .collect();
-        let stk_out = stack_out
-            .clone()
-            .into_iter()
-            .map(|x| <G1 as Group>::Scalar::from(x as u64))
-            .collect();
 
         let glue = if r1cs_converter.hybrid_len.is_none() {
             let q_len = logmn(r1cs_converter.table.len());
@@ -471,8 +449,8 @@ fn solve<'a>(
             let next_doc_v_hash = calc_d_clear(&r1cs_converter.pc, claim_blind, next_doc_v.clone());
 
             vec![
-                GlueOpts::Split((q, v, doc_q, doc_v_hash, sp_0, stk_in)),
-                GlueOpts::Split((next_q, next_v, next_doc_q, next_doc_v_hash, spp, stk_out)),
+                GlueOpts::Split((q, v, doc_q, doc_v_hash)),
+                GlueOpts::Split((next_q, next_v, next_doc_q, next_doc_v_hash)),
             ]
         } else {
             let hq_len = logmn(r1cs_converter.hybrid_len.unwrap());
@@ -498,8 +476,8 @@ fn solve<'a>(
             let next_hv_hash = calc_d_clear(&r1cs_converter.pc, claim_blind, next_hv.clone());
 
             vec![
-                GlueOpts::Hybrid((hq, hv_hash, sp_0, stk_in)),
-                GlueOpts::Hybrid((next_hq, next_hv_hash, spp, stk_out)),
+                GlueOpts::Hybrid((hq, hv_hash)),
+                GlueOpts::Hybrid((next_hq, next_hv_hash)),
             ]
         };
 
@@ -532,6 +510,7 @@ fn solve<'a>(
             r1cs_converter.batch_size,
             r1cs_converter.max_branches,
             <G1 as Group>::Scalar::from(r1cs_converter.kid_padding as u64),
+            nova_stack_data,
             commit_blind,
             claim_blind,
         );
@@ -554,8 +533,6 @@ fn solve<'a>(
         hybrid_running_q = next_hybrid_running_q;
         hybrid_running_v = next_hybrid_running_v;
         prev_cursor = next_cursor;
-        stack_ptr_0 = stack_ptr_popped;
-        stack_in = stack_out;
         i += 1
     }
 
@@ -585,6 +562,12 @@ fn prove_and_verify(
     let circuit_secondary = TrivialTestCircuit::new(StepCounterType::External);
     let z0_secondary = vec![<G2 as Group>::Scalar::zero()];
 
+    let mut nova_stack_data: LinkedList<(
+        <G1 as Group>::Scalar,
+        <G1 as Group>::Scalar,
+        <G1 as Group>::Scalar,
+    )>::new();
+
     // blocks until we receive first witness
     let mut circuit_primary = recv.recv().unwrap();
 
@@ -597,10 +580,13 @@ fn prove_and_verify(
         #[cfg(feature = "metrics")]
         log::tic(Component::Prover, "prove", format!("prove_{}", i).as_str());
 
+        let cp = circuit_primary.unwrap();
+        cp.stack = nova_stack_data;
+
         let result = RecursiveSNARK::prove_step(
             &proof_info.pp.lock().unwrap(),
             recursive_snark,
-            circuit_primary.clone().unwrap(),
+            cp,
             circuit_secondary.clone(),
             proof_info.z0_primary.clone(),
             z0_secondary.clone(),
@@ -622,6 +608,8 @@ fn prove_and_verify(
         assert!(res.is_ok()); // TODO delete
         */
         recursive_snark = Some(result.unwrap());
+
+        nova_stack_data = cp.stack;
 
         i += 1;
         circuit_primary = recv.recv().unwrap();
