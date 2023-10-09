@@ -278,6 +278,7 @@ fn setup<'a>(
         empty_glue,
         r1cs_converter.batch_size,
         r1cs_converter.max_branches,
+        <G1 as Group>::Scalar::from(r1cs_converter.kid_padding as u64),
         <G1 as Group>::Scalar::zero(),
         <G1 as Group>::Scalar::zero(),
     );
@@ -412,7 +413,7 @@ fn solve<'a>(
 
         // TODO
         // just for debugging :)
-        //circ_data.check_all(&wits);
+        circ_data.check_all(&wits);
 
         let sp_0 = <G1 as Group>::Scalar::from(stack_ptr_0 as u64);
         let spp = <G1 as Group>::Scalar::from(stack_ptr_popped as u64);
@@ -530,6 +531,7 @@ fn solve<'a>(
             glue,
             r1cs_converter.batch_size,
             r1cs_converter.max_branches,
+            <G1 as Group>::Scalar::from(r1cs_converter.kid_padding as u64),
             commit_blind,
             claim_blind,
         );

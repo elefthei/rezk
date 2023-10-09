@@ -23,6 +23,7 @@ use nova_snark::{
 use rug::integer::{IsPrime, Order};
 use rug::Integer;
 use std::collections::HashMap;
+use std::collections::LinkedList;
 
 /// Convert a (rug) integer to a prime field element.
 pub fn int_to_ff<F: PrimeField>(i: Integer) -> F {
@@ -78,7 +79,7 @@ pub enum GlueOpts<F: PrimeField> {
     Hybrid((Vec<F>, F, F, Vec<F>)),           // hybrid q, hybrid v, stack ptr, stack
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct NFAStepCircuit<F: PrimeField> {
     r1cs: R1csFinal, // TODO later ref
     values: Option<Vec<Value>>,
@@ -88,6 +89,7 @@ pub struct NFAStepCircuit<F: PrimeField> {
     glue: Vec<GlueOpts<F>>,
     batch_size: usize,
     max_branches: usize,
+    kid_padding: F,
     pub commit_blind: F,
     pub claim_blind: F,
 }
@@ -104,6 +106,7 @@ impl<F: PrimeField> NFAStepCircuit<F> {
         glue: Vec<GlueOpts<F>>,
         batch_size: usize,
         max_branches: usize,
+        kid_padding: F,
         commit_blind: F,
         claim_blind: F,
     ) -> Self {
@@ -131,6 +134,7 @@ impl<F: PrimeField> NFAStepCircuit<F> {
             glue,
             batch_size,
             max_branches,
+            kid_padding,
             commit_blind,
             claim_blind,
         }
@@ -355,6 +359,83 @@ where {
         return Ok(false);
     }
 
+    fn not_equal<CS>(
+        &self,
+        cs: &mut CS,
+        a: AllocatedNum<F>,
+        b: AllocatedNum<F>,
+        tag: &String,
+    ) -> Result<AllocatedNum<F>, SynthesisError>
+    where
+        F: PrimeField,
+        CS: ConstraintSystem<F>,
+    {
+        let ret;
+        let m;
+
+        if a.get_value() == b.get_value() {
+            ret = AllocatedNum::alloc(cs.namespace(|| format!("ne ret {}", tag)), || {
+                Ok(F::from(0))
+            })?;
+
+            m = AllocatedNum::alloc(cs.namespace(|| format!("ne m {}", tag)), || Ok(F::from(0)))?;
+        } else {
+            ret = AllocatedNum::alloc(cs.namespace(|| format!("ne ret {}", tag)), || {
+                Ok(F::from(1))
+            })?;
+            let inv_opt = (a.get_value().unwrap() - b.get_value().unwrap()).invert();
+            let inv = inv_opt.expect("couldn't invert i_0 for wit");
+            m = AllocatedNum::alloc(cs.namespace(|| format!("ne m {}", tag)), || Ok(inv))?;
+        }
+
+        // RET = 0 if a - b = 0 (equal), elst RET = 1
+        cs.enforce(
+            || format!("(a - b) * m = ret {}", tag),
+            |lc| lc + a.get_variable() - b.get_variable(),
+            |lc| lc + m.get_variable(),
+            |lc| lc + ret.get_variable(),
+        );
+
+        cs.enforce(
+            || format!("(1 - ret) * (a - b) = 0 {}", tag),
+            |lc| lc + CS::one() - ret.get_variable(),
+            |lc| lc + a.get_variable() - b.get_variable(),
+            |lc| lc + CS::one() - CS::one(),
+        );
+
+        return Ok(ret);
+    }
+
+    // ret = if condition, a, else b
+    // condition already asserted to be 0 or 1 - TODO?
+    fn select<CS>(
+        &self,
+        cs: &mut CS,
+        cond: AllocatedNum<F>,
+        a: AllocatedNum<F>,
+        b: AllocatedNum<F>,
+        tag: &String,
+    ) -> Result<AllocatedNum<F>, SynthesisError>
+    where
+        F: PrimeField,
+        CS: ConstraintSystem<F>,
+    {
+        let ret = AllocatedNum::alloc(cs.namespace(|| "ret"), || {
+            Ok(b.get_value().unwrap()
+                + cond.get_value().unwrap() * (a.get_value().unwrap() - b.get_value().unwrap()))
+        })?;
+
+        // RET = B + COND * (A - B) <- ite
+        cs.enforce(
+            || format!("ite {}", tag),
+            |lc| lc + a.get_variable() - b.get_variable(),
+            |lc| lc + cond.get_variable(),
+            |lc| lc + ret.get_variable() - b.get_variable(),
+        );
+
+        return Ok(ret);
+    }
+
     fn fiatshamir_circuit<'b, CS>(
         &self,
         query: &[Elt<F>],
@@ -567,6 +648,155 @@ where {
         };
 
         Ok(d_calc)
+    }
+
+    fn stack_hash_circuit<'b, CS>(
+        &self,
+        cs: &mut CS,
+        stack_preimage: &AllocatedNum<F>,
+        kid: &AllocatedNum<F>,
+        cursor: &AllocatedNum<F>,
+        tag: &str,
+    ) -> Result<AllocatedNum<F>, SynthesisError>
+    where
+        //A: Arity<F>,
+        CS: ConstraintSystem<F>,
+    {
+        let mut sponge = SpongeCircuit::new_with_constants(&self.pc, Mode::Simplex);
+        let mut sponge_ns = cs.namespace(|| format!("{} sponge", tag));
+        let pattern = vec![SpongeOp::Absorb(3), SpongeOp::Squeeze(1)];
+
+        sponge.start(IOPattern(pattern), None, &mut sponge_ns);
+
+        // original var alloc'd before
+
+        let mut query = vec![];
+        query.push(Elt::Allocated(stack_preimage.clone()));
+        query.push(Elt::Allocated(kid.clone()));
+        query.push(Elt::Allocated(cursor.clone()));
+
+        let new_pos = {
+            SpongeAPI::absorb(&mut sponge, 3, &query, &mut sponge_ns);
+
+            let output = SpongeAPI::squeeze(&mut sponge, 1, &mut sponge_ns);
+
+            Elt::ensure_allocated(
+                &output[0],
+                &mut sponge_ns.namespace(|| format!("ensure allocated {}", tag)), // name must be the same
+                // (??)
+                true,
+            )?
+        };
+
+        sponge.finish(&mut sponge_ns).unwrap();
+
+        Ok((new_pos))
+    }
+
+    fn stack_hash_eval<'b, CS>(
+        &mut self,
+        cs: &mut CS,
+        tag: &str,
+        stack: Vec<(F, F)>,
+        in_hash: AllocatedNum<F>,
+        out_hash: F,
+        push_var: &Option<AllocatedNum<F>>,
+        pop_var: &Option<AllocatedNum<F>>,
+        cursor_0_circ: Option<AllocatedNum<F>>,
+        cursor_in: AllocatedNum<F>,
+    ) -> Result<AllocatedNum<F>, SynthesisError>
+    where
+        //A: Arity<F>,
+        CS: ConstraintSystem<F>,
+    {
+        let push_cond = push_var.clone().unwrap();
+        let pop_cond = pop_var.clone().unwrap();
+
+        let mut push_hash = in_hash.clone();
+
+        assert_eq!(stack.len(), self.max_branches);
+
+        let mut i = 0;
+        for (kid, cursor) in stack {
+            let alloc_kid =
+                AllocatedNum::alloc(cs.namespace(|| format!("alloc_kid {}", i)), || Ok(kid))?;
+            let kid_padding =
+                AllocatedNum::alloc(cs.namespace(|| format!("cursor_kid {}", i)), || {
+                    Ok(self.kid_padding)
+                })?;
+
+            let not_padding =
+                self.not_equal(cs, alloc_kid.clone(), kid_padding, &format!("not padding"))?;
+
+            let hashed = self.stack_hash_circuit(
+                cs,
+                &in_hash,
+                &alloc_kid,
+                &cursor_in,
+                &format!("push hash {}", i),
+            )?;
+            push_hash = self.select(
+                cs,
+                not_padding,
+                hashed,
+                push_hash,
+                &format!("padding or not"),
+            )?;
+            i += 1;
+        }
+
+        let done_pushing =
+            self.select(cs, push_cond, push_hash, in_hash, &format!("push or not"))?;
+
+        let (stack_preimage, kid, cursor) = self.stack.pop_front().unwrap();
+
+        let hashed = self.stack_hash_circuit(
+            cs,
+            &stack_preimage,
+            &kid,
+            &cursor,
+            &format!("pop hash {}", i),
+        )?;
+
+        cs.enforce(
+            || format!("eq {}", tag),
+            |z| z + hashed.get_variable(),
+            |z| z + CS::one(),
+            |z| z + done_pushing.get_variable(),
+        );
+
+        let cursor_stack;
+        if pop_cond.get_value().unwrap() == F::one() {
+            cursor_stack = cursor;
+        } else {
+            cursor_stack =
+                AllocatedNum::alloc(cs.namespace(|| format!(" {}", i)), || Ok(F::zero()))?;
+        }
+
+        let done_popping = self.select(
+            cs,
+            pop_cond,
+            stack_preimage,
+            done_pushing,
+            &format!("pop or not"),
+        )?;
+
+        let cursor_0 = self.select(
+            cs,
+            pop_cond,
+            cursor_stack,
+            cursor_in,
+            &format!("cursor pop or not"),
+        )?;
+
+        cs.enforce(
+            || format!("eq {}", tag),
+            |z| z + cursor_0.get_variable(),
+            |z| z + CS::one(),
+            |z| z + cursor_0_circ.unwrap().get_variable(),
+        );
+
+        Ok(done_popping)
     }
 }
 
