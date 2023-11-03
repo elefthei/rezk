@@ -7,6 +7,7 @@ out*
 *.lock
 *.pdf
 *.csv
+metrics/target/*
 Cargo.lock
 fast*
 slow*

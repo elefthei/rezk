@@ -3,7 +3,8 @@
 use hashconsing::{consign, HConsed, HashConsign};
 
 use crate::frontend::openset::OpenSet;
-use crate::frontend::regex::dnf::OrSet;
+use crate::frontend::orset::OrSet;
+use crate::frontend::either::Either;
 use crate::frontend::safa::Skip;
 use core::fmt;
 use core::fmt::Formatter;
@@ -11,7 +12,6 @@ use core::fmt::Formatter;
 #[cfg(fuzz)]
 pub mod arbitrary;
 
-pub mod dnf;
 pub mod ord;
 pub mod parser;
 
@@ -21,10 +21,12 @@ pub type CharClass = OpenSet<char>;
 /// Hash-consed regex terms
 pub type Regex = HConsed<RegexF>;
 
+/// The head of a regular expression, see derivatives
+pub type RegexHead = Either<CharClass, Skip>;
+
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum RegexF {
     Nil,
-    Dot,
     CharClass(CharClass),
     App(Regex, Regex),
     Alt(Regex, Regex),
@@ -50,7 +52,8 @@ impl fmt::Display for RegexF {
 
         match self {
             RegexF::Nil => write!(f, "ε"),
-            RegexF::Dot => write!(f, "."),
+            RegexF::CharClass(c) if c.is_empty() => write!(f, "∅"),
+            RegexF::CharClass(c) if c.is_full() => write!(f, "."),
             RegexF::CharClass(c) => write!(f, "{}", c),
             RegexF::App(x, y) => write!(f, "{}{}", x, y),
             RegexF::Alt(ref x, ref y) => write!(f, "({} | {})", x, y),
@@ -68,7 +71,7 @@ impl RegexF {
     /// Recursive algebraic simplification
     pub fn simpl(&self) -> RegexF {
         match self {
-            RegexF::Nil | RegexF::Dot | RegexF::CharClass(_) => self.clone(),
+            RegexF::Nil | RegexF::CharClass(_) => self.clone(),
             RegexF::App(x, y) => RegexF::app(&x.simpl(), &y.simpl()),
             RegexF::Alt(x, y) => RegexF::alt(&x.simpl(), &y.simpl()),
             RegexF::Star(a) => RegexF::star(&a.simpl()),
@@ -85,11 +88,6 @@ impl RegexF {
         }
     }
 
-    /// Empty set
-    pub fn empty() -> RegexF {
-        RegexF::CharClass(CharClass::empty())
-    }
-
     /// Matches empty string (ε)
     pub fn nil() -> RegexF {
         RegexF::Nil
@@ -102,7 +100,7 @@ impl RegexF {
 
     /// Wildcard (matches any one character)
     pub fn dot() -> RegexF {
-        RegexF::Dot
+        RegexF::CharClass(CharClass::full())
     }
 
     /// Wildcard-closure
@@ -112,14 +110,7 @@ impl RegexF {
 
     /// Create a character class
     pub fn charclass(v: Vec<(char, Option<char>)>) -> RegexF {
-        let c = CharClass::from_iter(v.into_iter());
-        if c.negate().is_empty() {
-            RegexF::dot()
-        } else if c.is_empty() {
-            RegexF::empty()
-        } else {
-            RegexF::CharClass(c.clone())
-        }
+        RegexF::CharClass(CharClass::from_iter(v.into_iter()))
     }
 
     /// Subset relation is a partial order
@@ -132,35 +123,26 @@ impl RegexF {
             // Refl
             (x, y) if x == y => true,
             // Dot
-            (RegexF::CharClass(_), RegexF::Dot) => true,
+            (RegexF::CharClass(a), RegexF::CharClass(b)) => a.subset(b),
             // Nil
             (RegexF::Nil, _) if b.nullable() => true,
             // Range*
-            (RegexF::Range(x, i, _), RegexF::Star(y)) if *i == 0 && RegexF::partial_le(x, y) => {
-                true
-            }
+            (RegexF::Range(x, i, _), RegexF::Star(y)) if *i == 0 && RegexF::partial_le(x, y) => true,
             // Range
             (RegexF::Range(x, i1, j1), RegexF::Range(y, i2, j2))
-                if RegexF::partial_le(x, y) && i1 >= i2 && j1 <= j2 =>
-            {
-                true
-            }
+                if RegexF::partial_le(x, y) && i1 >= i2 && j1 <= j2 => true,
             // Star
             (RegexF::Star(a), RegexF::Star(b)) => RegexF::partial_le(a, b),
             // AltOpp
-            (RegexF::Alt(x1, x2), _) if RegexF::partial_le(x1, b) && RegexF::partial_le(x2, b) => {
-                true
-            }
+            (RegexF::Alt(x1, x2), _) if RegexF::partial_le(x1, b) && RegexF::partial_le(x2, b) =>
+                true,
             // AltR
             (_, RegexF::Alt(x1, _)) if RegexF::partial_le(a, x1) => true,
             // AltR
             (_, RegexF::Alt(_, x2)) if RegexF::partial_le(a, x2) => true,
-            // App
+            // App (equal)
             (RegexF::App(ref a, ref x), RegexF::App(ref b, ref y))
-                if RegexF::partial_le(a, b) && RegexF::partial_le(b, a) =>
-            {
-                RegexF::partial_le(x, y)
-            }
+                if RegexF::partial_eq(a, b) => RegexF::partial_le(x, y),
             (_, _) => false,
         }
     }
@@ -173,7 +155,6 @@ impl RegexF {
     /// Smart constructor [and] for approx. notion of equivalence
     pub fn and(a: &Self, b: &Self) -> Self {
         match (a, b) {
-            (_, _) if RegexF::partial_eq(a, b) => a.clone(),
             (_, _) if a.is_empty() || b.is_empty() => RegexF::empty(),
             // a & b and a <= b -> a
             (_, _) if RegexF::partial_le(&a, &b) => a.clone(),
@@ -316,7 +297,7 @@ impl RegexF {
 
     /// Extract a skip from a regex and return the rest
     pub fn extract_skip(&self) -> Option<(Skip, Self)> {
-        let res = match self {
+        match self {
             RegexF::Dot => Some((Skip::single(1), RegexF::nil())),
             // .*
             RegexF::Star(ref a) => {
@@ -345,8 +326,7 @@ impl RegexF {
                 }
             }
             _ => None,
-        };
-        res
+        }
     }
 
     /// Make [self] given [n] into [rrrr....r] n-times.
@@ -360,57 +340,39 @@ impl RegexF {
         }
     }
 
-    /// Generalized Antimirov derivative
-    pub fn aderiv(&self, c: &char) -> OrSet<Self> {
+    /// A generalization of derivatives, extract a skip or a character class from the [head] position
+    pub fn head(&self) -> OrSet<(RegexHead, Self)> {
         match self {
+            // head ε = {}
             RegexF::Nil => OrSet::empty(),
-            RegexF::CharClass(cs) if cs.contains(c) => OrSet::single(&RegexF::nil()),
-            RegexF::CharClass(_) => OrSet::empty(),
-            RegexF::Dot => OrSet::single(&RegexF::nil()),
-            RegexF::App(ref a, ref b) if a.nullable() => {
-                a.aderiv(c).map(|r| RegexF::app(&r, b)).or(&b.aderiv(c))
-            }
-            RegexF::App(ref a, ref b) => a.aderiv(c).map(|r| RegexF::app(&r, b)),
-            RegexF::Alt(ref a, ref b) => a.aderiv(c).or(&b.aderiv(c)),
-            RegexF::And(ref a, ref b) => a.aderiv(c).and(&b.aderiv(c)),
-            RegexF::Star(ref a) => a.aderiv(c).map(|r| RegexF::app(&r, &RegexF::star(a))),
+            // head ε = {}
+            RegexF::CharClass(cs) if cs.is_empty() => OrSet::empty(),
+            // head . = { (Skip(0), ε) }
+            RegexF::CharClass(cs) if cs.is_full() => OrSet::single((Either::right(Skip::single(1), RegexF::nil()))),
+            // head cs = { (cs, ε) }
+            RegexF::CharClass(cs) => OrSet::single((Either::left(cs), RegexF::nil())),
+            // head r·u = let (h, r') = r.head() in (h, r'·u) || u.head()
+            RegexF::App(ref a, ref b) if a.nullable() =>
+                a.head().map(|(h,r)| (h, RegexF::app(&r, b))).or(&b.head()),
+            // head r·u = let (h, r') = r.head() in (h, r'·u)
+            RegexF::App(ref a, ref b) => a.head().map(|(h,r)| (h, RegexF::app(&r, b))),
+            // head a | b = a.head() || b.head()
+            RegexF::Alt(ref a, ref b) => a.head().or(&b.head()),
+            // head a & b = a.head() && b.head()
+            RegexF::And(ref a, ref b) => a.head().and(&b.head()),
+            // head a* = let (h, r') = a.head() in (h, r'·a*)
+            RegexF::Star(ref a) => a.head().map(|(h,r)| (h, RegexF::app(&r, &RegexF::star(a)))),
             // The [nil] rule again
             RegexF::Range(_, i, j) if *i == 0 && *j == 0 => OrSet::empty(),
             // The app rule: a{i, j} = aa{i-1, j-1} but if a is nullable, repeat the app rule
             RegexF::Range(ref a, i, j) if a.nullable() => {
                 let b = RegexF::range_pred(a, i, j);
-                a.aderiv(c).map(|r| RegexF::app(&r, &b)).or(&b.aderiv(c))
+                a.head().map(|(h,r)| RegexF::app(&r, &b)).or(&b.head())
             }
             // The app rule: a{i, j} = aa{i-1, j-1}
-            RegexF::Range(ref a, i, j) => a
-                .aderiv(c)
-                .map(|r| RegexF::app(&r, &RegexF::range_pred(a, i, j))),
-        }
-    }
-
-    /// Brzozowski Derivative
-    pub fn deriv(&self, c: &char) -> Self {
-        match self {
-            RegexF::Nil => RegexF::empty(),
-            RegexF::CharClass(cs) if cs.contains(c) => RegexF::nil(),
-            RegexF::CharClass(_) => RegexF::empty(),
-            RegexF::Dot => RegexF::nil(),
-            RegexF::App(ref a, ref b) if a.nullable() => {
-                RegexF::alt(&RegexF::app(&a.deriv(c), b), &b.deriv(c))
-            }
-            RegexF::App(ref a, ref b) => RegexF::app(&a.deriv(c), b),
-            RegexF::Alt(ref a, ref b) => RegexF::alt(&a.deriv(c), &b.deriv(c)),
-            RegexF::And(ref a, ref b) => RegexF::and(&a.deriv(c), &b.deriv(c)),
-            RegexF::Star(ref a) => RegexF::app(&a.deriv(c), &RegexF::star(a)),
-            // The [nil] rule again
-            RegexF::Range(ref a, i, j) if *i == 0 && *j == 0 => RegexF::empty(),
-            // The app rule: a{i, j} = aa{i-1, j-1} but if a is nullable, repeat the app rule
-            RegexF::Range(ref a, i, j) if a.nullable() => RegexF::alt(
-                &RegexF::app(&a.deriv(c), &RegexF::range_pred(a, i, j)),
-                &RegexF::range_pred(a, i, j).deriv(c),
-            ),
-            // The app rule: a{i, j} = aa{i-1, j-1}
-            RegexF::Range(ref a, i, j) => RegexF::app(&a.deriv(c), &RegexF::range_pred(a, i, j)),
+            RegexF::Range(ref a, i, j) =>
+                a.head()
+                 .map(|(h,r)| (h, RegexF::app(&r, &RegexF::range_pred(a, i, j)))),
         }
     }
 }
@@ -418,6 +380,7 @@ impl RegexF {
 /// Top level module with hash-consing constructors
 pub mod re {
     use crate::frontend::openset::OpenSet;
+    use crate::frontend::orset::OrSet;
     use crate::frontend::regex::{parser::RegexParser, Regex, RegexF};
     use crate::frontend::regex::{CharClass, G};
     use crate::frontend::safa::Skip;
@@ -437,39 +400,32 @@ pub mod re {
     pub fn nil() -> Regex {
         G.mk(RegexF::Nil)
     }
-
     /// Matches nothing, empty set (∅)
     pub fn empty() -> Regex {
         G.mk(RegexF::CharClass(CharClass::empty()))
     }
-
     /// A single character ([c] character class)
     pub fn character(c: char) -> Regex {
         G.mk(RegexF::CharClass(CharClass::single(c)))
     }
-
     /// Range of characters
     pub fn charclass(v: &[(char, Option<char>)]) -> Regex {
         G.mk(RegexF::CharClass(OpenSet::from_iter(
             v.into_iter().map(|(a, b)| (*a, *b)),
         )))
     }
-
     /// Concatenation
     pub fn app(a: Regex, b: Regex) -> Regex {
         G.mk(RegexF::app(&*a, &*b))
     }
-
     /// Alternation
     pub fn alt(a: Regex, b: Regex) -> Regex {
         G.mk(RegexF::alt(&*a, &*b))
     }
-
     pub fn alts(a: &Vec<Regex>) -> Regex {
         let rs: Vec<RegexF> = a.into_iter().map(|r| r.get().clone()).collect();
         G.mk(RegexF::alts(&rs[..]))
     }
-
     /// Conjunction
     pub fn and(a: Regex, b: Regex) -> Regex {
         G.mk(RegexF::and(&*a, &*b))
@@ -510,7 +466,7 @@ pub mod re {
     }
 
     /// Derivative
-    pub fn deriv(a: &Regex, c: &char) -> Regex {
+    pub fn head(a: &Regex) -> OrSet<(RegexHead, Regex)> {
         G.mk(RegexF::deriv(&*a, c))
     }
 
@@ -518,18 +474,12 @@ pub mod re {
     pub fn nullable(a: &Regex) -> bool {
         (*a).nullable()
     }
-
-    /// Extract a skip from a regex and return the rest
-    pub fn extract_skip(a: &Regex) -> Option<(Skip, Regex)> {
-        let (s, rem) = (*a).extract_skip()?;
-        Some((s, G.mk(rem)))
-    }
 }
 
 #[test]
-fn test_regex_aderiv() {
+fn test_regex_deriv() {
     let r = re::simpl(re::new(r"^(?=a)(a|c)$"));
-    println!("r = {}, dr/da = {:?}", r, r.aderiv(&'a'));
+    println!("r = {}, dr/da = {:?}", r, r.deriv(&'a'));
 }
 
 #[test]
@@ -540,7 +490,7 @@ fn test_regex_zero_length() {
             re::character('o')
         ),
         re::simpl(re::new("^Foo$"))
-    );
+    )
 }
 
 #[test]
@@ -554,7 +504,7 @@ fn test_regex_ranges() {
             re::dotstar()
         ),
         re::simpl(re::new("[a-b]"))
-    );
+    )
 }
 
 #[test]
@@ -562,7 +512,7 @@ fn test_regex_dot_star() {
     assert_eq!(
         re::app(re::app(re::dotstar(), re::character('c')), re::dotstar()),
         re::simpl(re::new("^.*c"))
-    );
+    )
 }
 
 #[test]
@@ -570,7 +520,7 @@ fn regex_parser_test_repetition_range() {
     assert_eq!(
         re::range(re::character('a'), 1, 3),
         re::simpl(re::new("^a{1,3}$"))
-    );
+    )
 }
 
 #[test]
@@ -578,7 +528,7 @@ fn test_regex_negative_char_class() {
     assert_eq!(
         re::app(re::not(re::character('a')), re::character('b')),
         re::simpl(re::new("^[^a]b$"))
-    );
+    )
 }
 
 #[test]
@@ -596,7 +546,7 @@ fn test_regex_negative_char_class2() {
             re::dotstar()
         ),
         re::simpl(re::new("[^ab]c"))
-    );
+    )
 }
 
 #[test]
@@ -604,7 +554,7 @@ fn test_regex_dot() {
     assert_eq!(
         re::app(re::dot(), re::character('a'),),
         re::simpl(re::new("^.a$"))
-    );
+    )
 }
 
 #[test]
@@ -659,5 +609,5 @@ fn test_regex_negative_char_class_range() {
             re::dotstar()
         ),
         re::simpl(re::new("[^a-d]e"))
-    );
+    )
 }

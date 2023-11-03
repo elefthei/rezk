@@ -3,6 +3,8 @@ use core::{fmt, fmt::Debug, fmt::Display};
 use core::fmt::Formatter;
 use itertools::Itertools;
 
+use crate::frontend::boolalg::BooleanAlg;
+
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
 pub struct AndSet<T>(BTreeSet<T>);
 
@@ -44,6 +46,15 @@ impl<T: Ord + Clone> AndSet<T> {
     pub fn to_or(&self) -> OrSet<T> {
         OrSet(BTreeSet::from([self.clone()]))
     }
+
+    /// Is it a singleton set?
+    pub fn to_singleton(&self) -> Option<T> {
+        if self.0.len() == 1 {
+            self.0.first()
+        } else {
+            None
+        }
+    }
 }
 
 impl<T: Ord + Clone> OrSet<T> {
@@ -67,20 +78,28 @@ impl<T: Ord + Clone> OrSet<T> {
         OrSet(BTreeSet::from([AndSet::single(t)]))
     }
 
-    /// { a \/ b ... } \/ z = { a \/ b \/ z ... }
-    pub fn or(&self, b: &Self) -> Self {
-        let mut s = self.0.clone();
-        s.append(&mut b.0.clone());
-        OrSet(s)
+        /// Is it made of singleton sets?
+    pub fn to_singletons(&self) -> Vec<T> {
+        if self.0.all(|s| s.len() == 1) {
+            self.0.into_iter().filter_map(|s| s.first()).collect()
+        } else {
+            Vec::new()
+        }
     }
 
-    /// { a \/ b ... } /\ { x \/ y ... } = { (a /\ x) \/ (a /\ y) \/ (b /\ x) \/ (b /\ y) }
-    pub fn and(&self, b: &Self) -> Self {
-        OrSet(self.0
-                .iter()
-                .cartesian_product(b.0.iter())
-                .map(|(a, x)| a.and(x))
-                .collect())
+    pub fn to_sinleton(&self) -> Option<T> {
+        if self.0.len() == 1 {
+            match self.0.first() {
+                Some(v) if v.0.len() == 1 => v.first(),
+                _ => None
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn any<F>(self, f: F) -> bool where F: Fn(T) -> bool {
+        self.into_iter().any(|s| s.into_iter().all(f))
     }
 
     pub fn map<Y: Ord, F>(self, f: F) -> OrSet<Y>
@@ -99,6 +118,40 @@ impl<T: Ord + Clone> OrSet<T> {
         oacc
     }
 
+}
+
+impl<C: Ord + Clone> BooleanAlg for OrSet<C> {
+    /// { a \/ b ... } \/ z = { a \/ b \/ z ... }
+    pub fn or(&self, b: &Self) -> Self {
+        let mut s = self.0.clone();
+        s.append(&mut b.0.clone());
+        OrSet(s)
+    }
+
+    /// { a \/ b ... } /\ { x \/ y ... } = { (a /\ x) \/ (a /\ y) \/ (b /\ x) \/ (b /\ y) }
+    pub fn and(&self, b: &Self) -> Self {
+        OrSet(self.0
+                .iter()
+                .cartesian_product(b.0.iter())
+                .map(|(a, x)| a.and(x))
+                .collect())
+    }
+}
+
+impl<C: BooleanAlg> for AndSet<C> {
+    pub fn flatten(&self) -> Option<C> {
+        self.into_iter().reduce(|a, b| a.and(b))
+    }
+}
+
+impl<C: BooleanAlg> for OrSet<C> {
+    pub fn flatten(&self) -> Option<C> {
+        self.into_iter().reduce(|a, b|
+            match (a.flatten(), b.flatten()) {
+                (Some(a), Some(b)) => Some(a.or(b)),
+                (a, None) | (None, a) => a
+            })
+    }
 }
 
 impl<C: Display> fmt::Display for AndSet<C> {

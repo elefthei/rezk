@@ -58,6 +58,15 @@ impl<C: Display + Debug + Step + Default + Ord + Copy + Clone> OpenRange<C> {
         Step::steps_between(&self.start, &e)
     }
 
+    pub fn subset(&self, o: &Self) -> bool {
+        match (self.end, o.end) {
+            (None, None) => self.start <= o.start,
+            (None, Some(_)) => false,
+            (Some(_), None) => self.start <= o.start,
+            (Some(a), Some(b)) => self.start <= o.start && a <= b
+        }
+    }
+
     pub fn union(&self, o: &Self) -> OpenSet<C> {
         match (self.end, o.end) {
             (None, None) => OpenSet::open(self.start.min(o.start)),
@@ -219,6 +228,15 @@ impl<T: Step + Ord + Copy> Iterator for OpenSet<T> {
     }
 }
 
+impl<C: Display + Debug + Step + Default + Ord + Copy> BooleanAlg for OpenSet<C> {
+    pub fn and(&self, other: &Self) -> Self {
+        self.intersection(other)
+    }
+    pub fn or(&self, other: &Self) -> Self {
+        self.union(other)
+    }
+}
+
 impl<C: Display + Debug + Step + Default + Ord + Copy> OpenSet<C> {
     /// Nominal constructor
     pub fn new(v: &[(C, Option<C>)]) -> Self {
@@ -323,12 +341,21 @@ impl<C: Display + Debug + Step + Default + Ord + Copy> OpenSet<C> {
     pub fn contains(&self, c: &C) -> bool {
         self.0
             .iter()
-            .any(|r| r.start <= *c && r.end.map_or(true, |b| c <= &b))
+            .any(|r| r.subset(c))
     }
 
     /// Minimum (first) bound
     pub fn start(&self) -> Option<C> {
         self.0.first().map(|r| r.start)
+    }
+
+    /// Is self \subseteq other
+    pub fn subset(&self, other: &Self) {
+        let mut flag = true;
+        for r in self.0 {
+            flag &= other.contains(r);
+        }
+        flag
     }
 
     /// Insert an interval in the range set

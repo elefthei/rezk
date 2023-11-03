@@ -9,66 +9,17 @@ use petgraph::visit::*;
 use petgraph::Graph;
 use petgraph::Direction;
 
-use std::result::Result;
-
-use crate::frontend::openset::{OpenRange, OpenSet};
-use crate::frontend::quantifier::Quant;
+use crate::frontend::openset::OpenSet;
+use crate::frontend::orset::OrSet;
+use crate::frontend::orset::Either;
 use crate::frontend::regex::{re, Regex, RegexF};
 use crate::trace::{Trace, TraceElem};
 use rayon::iter::*;
 
-
-use std::time::{Duration, Instant};
 use core::fmt;
 use core::fmt::{Display, Formatter};
-use lazy_static::lazy_static;
 use std::fmt::Debug;
 use std::hash::Hash;
-
-#[derive(Debug, Clone, Hash, PartialOrd, Ord, PartialEq, Eq)]
-pub struct Either<A, B>(pub Result<A, B>);
-
-impl<A, B> Either<A, B> {
-    fn left(a: A) -> Self {
-        Self(Ok(a))
-    }
-    fn right(b: B) -> Self {
-        Self(Err(b))
-    }
-    fn test_left<F>(&self, f: F) -> bool
-    where
-        F: Fn(&A) -> bool,
-    {
-        match self.0 {
-            Ok(ref a) => f(a),
-            _ => false,
-        }
-    }
-    fn test_right<F>(&self, f: F) -> bool
-    where
-        F: Fn(&B) -> bool,
-    {
-        match self.0 {
-            Err(ref b) => f(b),
-            _ => false,
-        }
-    }
-    fn right_or<'a>(&'a self, default: &'a B) -> &'a B {
-        match self.0 {
-            Ok(_) => default,
-            Err(ref e) => e,
-        }
-    }
-}
-
-impl<A: Display, B: Display> Display for Either<A, B> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            Ok(ref a) => write!(f, "{}", a),
-            Err(ref b) => write!(f, "{}", b),
-        }
-    }
-}
 
 /// A skip is a set of ranges
 pub type Skip = OpenSet<usize>;
@@ -79,7 +30,7 @@ pub struct SAFA<C: Clone> {
     pub ab: Vec<C>,
 
     /// A graph
-    pub g: Graph<Quant<Regex>, Either<C, Skip>>,
+    pub g: Graph<OrSet<Regex>, Either<C, Skip>>,
 
     /// Accepting states
     pub accepting: BTreeSet<NodeIndex<u32>>,
@@ -104,8 +55,8 @@ impl SAFA<char> {
     pub fn new<'a>(alphabet: &'a str, re: &Regex) -> Self {
         let ab = alphabet.chars().sorted().collect();
         // Add root
-        let mut g: Graph<Quant<Regex>, Either<char, Skip>> = Graph::new();
-        let n_init = g.add_node(Quant::or(re.clone()));
+        let mut g: Graph<OrSet<Regex>, Either<char, Skip>> = Graph::new();
+        let n_init = g.add_node(OrSet::single(re));
         let mut s = Self {
             ab,
             g,
@@ -114,60 +65,53 @@ impl SAFA<char> {
         };
         // Recursively build graph
         s.add(n_init);
-        s.sink = s.find(&re::empty());
+        s.sink = s.find(&OrSet::empty());
         s
     }
 
-    /// Add a regex to position [from]
-    fn add_skip(&mut self, n: NodeIndex<u32>, skip: Skip, q_c: &Regex) {
-        let recurse = !self.exists(q_c, false);
-        let n_c = self.find_or_add(q_c, false);
-        self.g.add_edge(n, n_c, Either::right(skip.clone()));
-        // Also add the complement skip since we know it always fails
+    /// Add complementary skip edge to failure (if it exists)
+    fn add_skip_complement(&mut self, n: NodeIndex<u32>, skip: Skip) {
         if !skip.is_full() && !skip.is_nil() {
             if let Some(n_empty) = self.sink {
                 self.g.add_edge(n, n_empty, Either::right(skip.negate()));
             } else {
-                let n_empty = self.g.add_node(Quant::new(re::empty(), false));
+                let n_empty = self.g.add_node(OrSet::empty());
                 self.sink = Some(n_empty);
                 self.g.add_edge(n_empty, n_empty, SAFA::epsilon());
                 self.g.add_edge(n, n_empty, Either::right(skip.negate()));
             }
         }
-        if recurse {
+    }
+
+    /// Add a regex to position [from]
+    fn add_skip(&mut self, n: NodeIndex<u32>, skip: Skip, q_c: &OrSet<Regex>) {
+        if let Some(n_c) = self.find(q_c) {
+            // [q_c] already exists in the graph, add skip edge
+            self.g.add_edge(n, n_c, Either::right(skip.clone()));
+            self.add_skip_complement(n, skip);
+        } else {
+            // [q_c] does not exist in the graph, add it
+            let n_c = self.g.add_node(q_c.clone());
+            self.g.add_edge(n, n_c, Either::right(skip.clone()));
+            self.add_skip_complement(n, skip);
             self.add(n_c);
         }
     }
 
-    /// Find if a regex exists in the nodes of the graph
-    pub fn exists(&self, r: &Regex, is_and: bool) -> bool {
-        self.g
-            .node_indices()
-            .any(|i| &self.g[i].get() == r && self.g[i].is_and() == is_and)
-    }
-
     /// Find a node from a regex
-    pub fn find(&self, r: &Regex) -> Option<NodeIndex<u32>> {
-        self.g.node_indices().find(|i| &self.g[*i].get() == r)
-    }
-
-    /// Find a node from a regex, or add it and return a new node id
-    pub fn find_or_add(&mut self, r: &Regex, is_and: bool) -> NodeIndex<u32> {
-        self.g
-            .node_indices()
-            .find(|i| self.g[*i] == Quant::new(r.clone(), is_and))
-            .unwrap_or_else(|| {
-                let n_q = self.g.add_node(Quant::new(r.clone(), is_and));
-                n_q
-            })
+    pub fn find(&self, r: &OrSet<Regex>) -> Option<NodeIndex<u32>> {
+        self.g.node_indices().find(|i| &self.g[*i] == r)
     }
 
     /// Add derivative of a node in the graph
     fn add_derivatives(&mut self, from: NodeIndex<u32>) {
-        // Take all the single character steps
+        // Reflexive step
         self.g.add_edge(from, from, SAFA::epsilon());
+        // Take all the single character steps
         for c in self.ab.clone().iter() {
-            let q_c = re::deriv(&self.g[from].get(), &c);
+            let q_c = self.g[from].flat_map(|e| re::deriv(&e, &c));
+            if let Some(n_c) = self.find(q_c) {
+                self.g.add_edge(from, n_c,
             let recurse = !self.exists(&q_c, false);
             let n_c = self.find_or_add(&q_c, false);
             self.g.add_edge(from, n_c, Either::left(*c));
@@ -215,15 +159,13 @@ impl SAFA<char> {
 
     /// Add a new regex starting at [from]
     fn add(&mut self, from: NodeIndex<u32>) {
-        if self.g[from].get().nullable() {
+        if self.g[from].any(|r| r.nullable()) {
             self.accepting.insert(from);
         }
 
         re::extract_skip(&self.g[from].get())
             .map(|(skip, rem)| self.add_skip(from, skip, &rem))
-            .or_else(|| self.add_fork(true, from)) // Add [and] fork
-            .or_else(|| self.add_fork(false, from)) // Add [or] fork
-            .or_else(|| Some(self.add_derivatives(from))); // Catch-all
+            .or_else(|| Some(self.add_aderivatives(from))); // Catch-all
     }
 
     /// Is this node a fork ([alt, and])
