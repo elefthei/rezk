@@ -54,7 +54,7 @@ pub fn get_folded_cost(circuit_size: usize, n_foldings: usize) -> usize {
     2*n_foldings*(V1+V2+circuit_size) + 8*(V1+circuit_size)
 }
 
-pub fn naive_bench(r: String, alpha: String, doc: String, out_write:PathBuf) {
+pub fn naive_bench(r: String, alpha: String, doc: String, out_write:PathBuf, batch_size: usize) {
     println!("nwr");
     println!("doc len: {}",doc.len());
     println!("{}",r);
@@ -112,9 +112,13 @@ pub fn naive_bench(r: String, alpha: String, doc: String, out_write:PathBuf) {
 
     let file = OpenOptions::new().write(true).append(true).create(true).open(out_write.clone()).unwrap();
     let mut wtr = Writer::from_writer(file);
+    let mut title = doc.clone();
+    if title.len() > 10 {
+        title = title[..10].to_string();
+    }
     let _ = wtr.write_record(&[
     format!("{}_{}",
-    &doc[..10],
+    title,
     doc.len()),
     "nwr".to_string(),
     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs().to_string(),
@@ -127,7 +131,7 @@ pub fn naive_bench(r: String, alpha: String, doc: String, out_write:PathBuf) {
     let _ = wtr.write_record(&[spacer, spacer, spacer, spacer,"\n"]);
     wtr.flush();
 
-    let _ = make_circom(&dfa, doc_len, alpha.len());
+    let _ = make_circom(&dfa, doc_len, alpha.len(), batch_size);
 
     let mut command = shell("circom match.circom --r1cs --sym --c --prime vesta");
     let mut make_command = shell("cd match_cpp && make && cd ..");
@@ -140,151 +144,151 @@ pub fn naive_bench(r: String, alpha: String, doc: String, out_write:PathBuf) {
 
     println!("{}", String::from_utf8(output.stdout).unwrap());
 
-    remove_file("match.circom");
+    // remove_file("match.circom");
 
-    println!("post circom");
+    // println!("post circom");
 
-    let circuit_filepath = "match.r1cs";
-    let witness_gen_filepath = "match_cpp/match";
+    // let circuit_filepath = "match.r1cs";
+    // let witness_gen_filepath = "match_cpp/match";
 
-    let root = current_dir().unwrap();
+    // let root = current_dir().unwrap();
 
-    let circuit_file = root.join(circuit_filepath);
-    let witness_generator_file = root.join(witness_gen_filepath);
-    let witness_generator_output = root.join("circom_witness.wtns");
+    // let circuit_file = root.join(circuit_filepath);
+    // let witness_generator_file = root.join(witness_gen_filepath);
+    // let witness_generator_output = root.join("circom_witness.wtns");
 
-    // #[cfg(feature = "metrics")]
-    // log::tic(Component::Compiler, "R1CS", "Loading");
-    let r1cs = load_r1cs::<G1, G2>(&FileLocation::PathBuf(circuit_file));
+    // // #[cfg(feature = "metrics")]
+    // // log::tic(Component::Compiler, "R1CS", "Loading");
+    // let r1cs = load_r1cs::<G1, G2>(&FileLocation::PathBuf(circuit_file));
 
-    // #[cfg(feature = "metrics")]
-    // {log::stop(Component::Compiler,"R1CS", "Loading");
-    // log::write_csv(&out_write.as_path().display().to_string()).unwrap();}
+    // // #[cfg(feature = "metrics")]
+    // // {log::stop(Component::Compiler,"R1CS", "Loading");
+    // // log::write_csv(&out_write.as_path().display().to_string()).unwrap();}
 
-    println!("R1CS loaded" );
+    // println!("R1CS loaded" );
 
-    let start_public_input = [
-        F::<G1>::from(0),
-        gen_hash(vec![commitment.blind], &pc),
-        F::<G1>::from(1),
-        gen_hash(vec![F::<G1>::from(prover_states[0] as u64)], &pc),
-    ];
+    // let start_public_input = [
+    //     F::<G1>::from(0),
+    //     gen_hash(vec![commitment.blind], &pc),
+    //     F::<G1>::from(1),
+    //     gen_hash(vec![F::<G1>::from(prover_states[0] as u64)], &pc),
+    // ];
 
-    let mut private_inputs: Vec<HashMap<String, serde_json::Value>> = Vec::new();
+    // let mut private_inputs: Vec<HashMap<String, serde_json::Value>> = Vec::new();
 
-    for i in 0..doc_len {
-        let mut private_input = HashMap::new();
-        private_input.insert("cur_state".to_string(), json!(prover_states[i]));
-        private_input.insert("next_state".to_string(), json!(prover_states[i+1]));
-        private_input.insert("char".to_string(),json!(doc_vec[i]));
-        private_inputs.push(private_input);
+    // for i in 0..doc_len {
+    //     let mut private_input = HashMap::new();
+    //     private_input.insert("cur_state".to_string(), json!(prover_states[i]));
+    //     private_input.insert("next_state".to_string(), json!(prover_states[i+1]));
+    //     private_input.insert("char".to_string(),json!(doc_vec[i]));
+    //     private_inputs.push(private_input);
 
-    }
+    // }
 
-    // #[cfg(feature = "metrics")]
-    // log::tic(Component::Compiler, "R1CS","Public Params");
+    // // #[cfg(feature = "metrics")]
+    // // log::tic(Component::Compiler, "R1CS","Public Params");
 
-    let pp = create_public_params::<G1, G2>(r1cs.clone());
+    // let pp = create_public_params::<G1, G2>(r1cs.clone());
     
+    // // #[cfg(feature = "metrics")]
+    // // log::stop(Component::Compiler, "R1CS","Public Params");
+
     // #[cfg(feature = "metrics")]
-    // log::stop(Component::Compiler, "R1CS","Public Params");
-
-    #[cfg(feature = "metrics")]
-    {
-        log::stop(Component::Compiler, "constraint_generation");
-        log::r1cs(Component::Compiler, "step_circuit", pp.num_constraints().0);
-        log::write_csv(&out_write.as_path().display().to_string()).unwrap();
-    }
+    // {
+    //     log::stop(Component::Compiler, "constraint_generation");
+    //     log::r1cs(Component::Compiler, "step_circuit", pp.num_constraints().0);
+    //     log::write_csv(&out_write.as_path().display().to_string()).unwrap();
+    // }
  
-    println!(
-        "Number of constraints per step (primary circuit): {}",
-        pp.num_constraints().0
-    );
-    println!(
-        "Number of constraints per step (secondary circuit): {}",
-        pp.num_constraints().1
-    );
+    // println!(
+    //     "Number of constraints per step (primary circuit): {}",
+    //     pp.num_constraints().0
+    // );
+    // println!(
+    //     "Number of constraints per step (secondary circuit): {}",
+    //     pp.num_constraints().1
+    // );
 
-    #[cfg(feature = "metrics")]
-    log::tic(Component::Prover, "prove+wit");
-    let recursive_snark = create_recursive_circuit(
-        FileLocation::PathBuf(witness_generator_file),
-        r1cs,
-        private_inputs,
-        start_public_input.to_vec(),
-        &pp,
-        out_write.clone()
-    ).unwrap();
-    #[cfg(feature = "metrics")] {
-        log::stop(Component::Prover, "prove+wit");
-        log::write_csv(&out_write.as_path().display().to_string()).unwrap();
-    }
+    // #[cfg(feature = "metrics")]
+    // log::tic(Component::Prover, "prove+wit");
+    // let recursive_snark = create_recursive_circuit(
+    //     FileLocation::PathBuf(witness_generator_file),
+    //     r1cs,
+    //     private_inputs,
+    //     start_public_input.to_vec(),
+    //     &pp,
+    //     out_write.clone()
+    // ).unwrap();
+    // #[cfg(feature = "metrics")] {
+    //     log::stop(Component::Prover, "prove+wit");
+    //     log::write_csv(&out_write.as_path().display().to_string()).unwrap();
+    // }
 
-    let z0_secondary = [<G2 as Group>::Scalar::zero()];
+    // let z0_secondary = [<G2 as Group>::Scalar::zero()];
 
-    // produce a compressed SNARK
-    println!("Generating a CompressedSNARK using Spartan with IPA-PC...");
-    type S1 = nova_snark::spartan::RelaxedR1CSSNARK<G1, EE1>;
-    type S2 = nova_snark::spartan::RelaxedR1CSSNARK<G2, EE2>;
+    // // produce a compressed SNARK
+    // println!("Generating a CompressedSNARK using Spartan with IPA-PC...");
+    // type S1 = nova_snark::spartan::RelaxedR1CSSNARK<G1, EE1>;
+    // type S2 = nova_snark::spartan::RelaxedR1CSSNARK<G2, EE2>;
 
-    #[cfg(feature = "metrics")]
-    log::tic(Component::Prover, "compressed_snark");
+    // #[cfg(feature = "metrics")]
+    // log::tic(Component::Prover, "compressed_snark");
 
-    let res = CompressedSNARK::<_, _, _, _, S1, S2>::prove(&pp, &recursive_snark);
+    // let res = CompressedSNARK::<_, _, _, _, S1, S2>::prove(&pp, &recursive_snark);
 
-    #[cfg(feature = "metrics")]
-    log::stop(Component::Prover, "compressed_snark");
+    // #[cfg(feature = "metrics")]
+    // log::stop(Component::Prover, "compressed_snark");
 
-    assert!(res.is_ok());
-    let compressed_snark = res.unwrap();
-
-
-    // // verify the compressed SNARK
-    println!("Verifying a CompressedSNARK...");
-
-    #[cfg(feature = "metrics")]
-    log::tic(Component::Verifier, "snark_verification");
-    let res = compressed_snark.verify(
-        &pp,
-        doc_len,
-        start_public_input.to_vec().clone(),
-        z0_secondary.to_vec(),
-    );
-
-    #[cfg(feature = "metrics")]
-    log::stop(Component::Verifier, "snark_verification");
-
-    println!(
-        "CompressedSNARK::verify: {:?}",
-        res,
-    );
-    assert!(res.is_ok());
-
-    // index,hash.out, valid_match.out,next_state_hash.out;
-    println!(
-        "zn? {:?}",
-        res.unwrap().0,
-    );
-
-    println!(
-        "commitment {:?}",
-        commitment,
-    );
-
-    #[cfg(feature = "metrics")]
-    log::space(
-        Component::Prover,
-        "compressed_snark_size",
-        bincode::serialize(&compressed_snark).unwrap().len(),
-    );
+    // assert!(res.is_ok());
+    // let compressed_snark = res.unwrap();
 
 
-    #[cfg(feature = "metrics")]
-    log::write_csv(&out_write.as_path().display().to_string()).unwrap();
+    // // // verify the compressed SNARK
+    // println!("Verifying a CompressedSNARK...");
 
-    remove_file("match.sym");
-    remove_file("match.r1cs");
-    remove_file("circom_witness.wtns");
+    // #[cfg(feature = "metrics")]
+    // log::tic(Component::Verifier, "snark_verification");
+    // let res = compressed_snark.verify(
+    //     &pp,
+    //     doc_len,
+    //     start_public_input.to_vec().clone(),
+    //     z0_secondary.to_vec(),
+    // );
+
+    // #[cfg(feature = "metrics")]
+    // log::stop(Component::Verifier, "snark_verification");
+
+    // println!(
+    //     "CompressedSNARK::verify: {:?}",
+    //     res,
+    // );
+    // assert!(res.is_ok());
+
+    // // index,hash.out, valid_match.out,next_state_hash.out;
+    // println!(
+    //     "zn? {:?}",
+    //     res.unwrap().0,
+    // );
+
+    // println!(
+    //     "commitment {:?}",
+    //     commitment,
+    // );
+
+    // #[cfg(feature = "metrics")]
+    // log::space(
+    //     Component::Prover,
+    //     "compressed_snark_size",
+    //     bincode::serialize(&compressed_snark).unwrap().len(),
+    // );
+
+
+    // #[cfg(feature = "metrics")]
+    // log::write_csv(&out_write.as_path().display().to_string()).unwrap();
+
+    // remove_file("match.sym");
+    // remove_file("match.r1cs");
+    // remove_file("circom_witness.wtns");
 
     return   
 }
@@ -292,11 +296,11 @@ pub fn naive_bench(r: String, alpha: String, doc: String, out_write:PathBuf) {
 
 #[test]
 fn test_1() {
-    let r  = "abc";
+    let r  = "abcc";
     //"Message-ID: .*\nDate: Tue, 8 May 2001 09:16:00 -0700 \(PDT\)\nFrom: .*\nTo: .*\nSubject: Re:\nMime-Version: 1\.0\nContent-Type: text\/plain; charset=us-ascii\nContent-Transfer-Encoding: 7bit\nX-From: Mike Maggi\nX-To: Amanda Huble\nX-cc: \nX-bcc: \nX-Folder: \\Michael_Maggi_Jun2001\\Notes Folders\\Sent\nX-Origin: Maggi-M\nX-FileName: mmaggi\.nsf\n\nat 5:00".to_string();
     //let abvec: Vec<char> = (0..256).filter_map(std::char::from_u32).collect();
     let ab: String = "abc".to_string();
     //let ab = abvec.iter().collect();
-    let doc = "abc".to_owned();
-    naive_bench(r.to_string(),ab, doc, PathBuf::from("out_test"));
+    let doc = "abcc".to_owned();
+    naive_bench(r.to_string(),ab, doc, PathBuf::from("out_test"),2);
 }
