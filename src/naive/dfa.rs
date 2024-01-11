@@ -38,6 +38,8 @@ impl<'a> DFA<'a> {
           //println!("initial state:{}",q);
           d.add_state(q);
 
+          d.add_transition(q,'\0',&q);
+
           // Explore derivatives
           //d.ab.chars()
           for c in d.ab.chars()  {

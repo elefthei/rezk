@@ -49,6 +49,8 @@ where
     };
     let circuit_secondary = TrivialTestCircuit::default();
 
+    println!("to setup");
+
     PublicParams::setup(circuit_primary.clone(), circuit_secondary.clone()).unwrap()
 }
 

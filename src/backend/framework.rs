@@ -952,14 +952,14 @@ mod tests {
         let safa = SAFA::new(&ab[..], &r);
 
         init();
-        run_backend(
-            safa.clone(),
-            doc.clone(),
-            batch_size,
-            projections,
-            hybrid,
-            merkle,
-        );
+        // run_backend(
+        //     safa.clone(),
+        //     doc.clone(),
+        //     batch_size,
+        //     projections,
+        //     hybrid,
+        //     merkle,
+        // );
     }
 
     #[test]

@@ -230,7 +230,7 @@ pub fn make_main(doc_len: usize,deltas:usize,n_accepting:usize, n_char: usize, n
 
         step_out[0] <== hashes[{batch_size}].out;
         step_out[1] <== valid_match.out;
-        step_out[2] <== step_in[2]+{batch_size};
+        step_out[2] <== left_to_proc-{batch_size};
     }}
     
     component main {{ public [step_in] }}= Main();")
