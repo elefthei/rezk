@@ -11,7 +11,7 @@ use circom::circuit::{CircomCircuit, R1CS};
 use ff::Field;
 use nova_snark::{
     traits::{circuit::TrivialTestCircuit, Group},
-    PublicParams, RecursiveSNARK,
+    PublicParams, RecursiveSNARK,FINAL_EXTERNAL_COUNTER,
 };
 use num_bigint::BigInt;
 use num_traits::Num;
@@ -232,6 +232,16 @@ where
             start_public_input.clone(),
             z0_secondary.clone(),
         );
+        // let test = res.clone().unwrap().verify(
+        //             &pp,
+        //             iteration_count,
+        //             start_public_input.clone(),
+        //             z0_secondary.clone(),
+        //         );
+        //         println!("check test: {:#?}", test);
+
+        //         assert!(test.is_ok()); // TODO delete
+
         log::stop(Component::Prover, format!("prove_{}",i).as_str());
         log::write_csv(&out_write.as_path().display().to_string()).unwrap();
 

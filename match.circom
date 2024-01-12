@@ -7,9 +7,9 @@ pragma circom 2.0.3;
         signal input curIndex;
         signal output out;
     
-        component runningProduct = MultiplierN(40);
+        component runningProduct = MultiplierN(10);
 
-        for (var i = 0; i < 40; i++) {
+        for (var i = 0; i < 10; i++) {
             runningProduct.in[i] <== rootsTrans(i) - curIndex;
         }
         out <== runningProduct.out;
@@ -21,9 +21,9 @@ pragma circom 2.0.3;
         
         component isZero = IsZero();
 
-        component runningProduct = MultiplierN(6);
+        component runningProduct = MultiplierN(2);
     
-        for (var i = 0; i < 6; i++) {
+        for (var i = 0; i < 2; i++) {
             runningProduct.in[i] <== rootsMatch(i) - in;
         }
         isZero.in <== runningProduct.out;
@@ -31,27 +31,29 @@ pragma circom 2.0.3;
     }
     
     template Main () {
-        signal input states[3+1];
-        signal input chars[3];
+        signal input states[2+1];
+        signal input chars[2];
 
-        signal input step_in[3];
-        signal output step_out[3];
+        signal input step_in[4];
+        signal output step_out[4];
 
         signal running_hash <== step_in[0];
         signal left_to_proc <==step_in[2];
 
-        component valid_trans[3];
+        component valid_trans[2];
 
-        component hashes[3+1];
+        component hashes[2+1];
         hashes[0] = Poseidon(1);
         hashes[0].inputs[0] <== running_hash;
 
         component valid_match;
         valid_match = IsValidMatch();
+
+        var loop = 2+1;
         
-        for (var j=1;j<=3;j++) {
+        for (var j=1;j<loop;j++) {
             valid_trans[j-1] = IsValidTrans();
-            valid_trans[j-1].curIndex <== states[j-1]*10*3 + chars[j-1]*10 + states[j];
+            valid_trans[j-1].curIndex <== states[j-1]*5*1 + chars[j-1]*5 + states[j];
             valid_trans[j-1].out === 0;
 
             hashes[j] = Poseidon(2);
@@ -59,11 +61,12 @@ pragma circom 2.0.3;
             hashes[j].inputs[1] <== chars[j-1];
 
         }
-        valid_match.in <== states[3];
+        valid_match.in <== states[2];
 
-        step_out[0] <== hashes[3].out;
+        step_out[0] <== hashes[2].out;
         step_out[1] <== valid_match.out;
-        step_out[2] <== left_to_proc-3;
+        step_out[2] <== left_to_proc-2;
+        step_out[3] <== 0;
     }
     
     component main { public [step_in] }= Main();

@@ -201,8 +201,8 @@ pub fn make_main(doc_len: usize,deltas:usize,n_accepting:usize, n_char: usize, n
         signal input states[{batch_size}+1];
         signal input chars[{batch_size}];
 
-        signal input step_in[3];
-        signal output step_out[3];
+        signal input step_in[4];
+        signal output step_out[4];
 
         signal running_hash <== step_in[0];
         signal left_to_proc <==step_in[2];
@@ -215,8 +215,10 @@ pub fn make_main(doc_len: usize,deltas:usize,n_accepting:usize, n_char: usize, n
 
         component valid_match;
         valid_match = IsValidMatch();
+
+        var loop = {batch_size}+1;
         
-        for (var j=1;j<={batch_size};j++) {{
+        for (var j=1;j<loop;j++) {{
             valid_trans[j-1] = IsValidTrans();
             valid_trans[j-1].curIndex <== states[j-1]*{n_states}*{n_char} + chars[j-1]*{n_states} + states[j];
             valid_trans[j-1].out === 0;
@@ -231,6 +233,7 @@ pub fn make_main(doc_len: usize,deltas:usize,n_accepting:usize, n_char: usize, n
         step_out[0] <== hashes[{batch_size}].out;
         step_out[1] <== valid_match.out;
         step_out[2] <== left_to_proc-{batch_size};
+        step_out[3] <== 0;
     }}
     
     component main {{ public [step_in] }}= Main();")

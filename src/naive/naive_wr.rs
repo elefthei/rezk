@@ -179,6 +179,7 @@ pub fn naive_bench(r: String, alpha: String, doc_orig: String, out_write:PathBuf
         gen_hash(vec![commitment.blind], &pc),
         F::<G1>::from(1),
         F::<G1>::from(doc_len as u64),
+        F::<G1>::from(0),
     ];
 
     let mut private_inputs: Vec<HashMap<String, serde_json::Value>> = Vec::new();
@@ -224,12 +225,12 @@ pub fn naive_bench(r: String, alpha: String, doc_orig: String, out_write:PathBuf
     let recursive_snark = create_recursive_circuit(
         FileLocation::PathBuf(witness_generator_file),
         r1cs,
-        private_inputs,
+        private_inputs.clone(),
         start_public_input.to_vec(),
         &pp,
         out_write.clone()
     ).unwrap();
-    
+
     #[cfg(feature = "metrics")] {
         log::stop(Component::Prover, "prove+wit");
         log::write_csv(&out_write.as_path().display().to_string()).unwrap();
@@ -261,7 +262,7 @@ pub fn naive_bench(r: String, alpha: String, doc_orig: String, out_write:PathBuf
     log::tic(Component::Verifier, "snark_verification");
     let res = compressed_snark.verify(
         &pp,
-        doc_len,
+        private_inputs.len(),
         start_public_input.to_vec().clone(),
         z0_secondary.to_vec(),
     );
@@ -275,7 +276,7 @@ pub fn naive_bench(r: String, alpha: String, doc_orig: String, out_write:PathBuf
     );
     assert!(res.is_ok());
 
-    // index,hash.out, valid_match.out,next_state_hash.out;
+    // hash.out, valid_match.out,left_to_proc;
     println!(
         "zn? {:?}",
         res.unwrap().0,
@@ -307,11 +308,11 @@ pub fn naive_bench(r: String, alpha: String, doc_orig: String, out_write:PathBuf
 
 #[test]
 fn test_1_nwr() {
-    let r  = "abcc";
+    let r  = "aaa";
     //"Message-ID: .*\nDate: Tue, 8 May 2001 09:16:00 -0700 \(PDT\)\nFrom: .*\nTo: .*\nSubject: Re:\nMime-Version: 1\.0\nContent-Type: text\/plain; charset=us-ascii\nContent-Transfer-Encoding: 7bit\nX-From: Mike Maggi\nX-To: Amanda Huble\nX-cc: \nX-bcc: \nX-Folder: \\Michael_Maggi_Jun2001\\Notes Folders\\Sent\nX-Origin: Maggi-M\nX-FileName: mmaggi\.nsf\n\nat 5:00".to_string();
     //let abvec: Vec<char> = (0..256).filter_map(std::char::from_u32).collect();
-    let ab: String = "abc".to_string();
+    let ab: String = "a".to_string();
     //let ab = abvec.iter().collect();
-    let doc = "abcc".to_owned();
-    naive_bench(r.to_string(),ab, doc, PathBuf::from("out_test"),3);
+    let doc = "aaa".to_owned();
+    naive_bench(r.to_string(),ab, doc, PathBuf::from("out_test"),2);
 }
